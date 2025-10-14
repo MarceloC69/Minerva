@@ -1,0 +1,184 @@
+# ============================================
+# MINERVA PROJECT - .gitignore
+# ============================================
+
+# ====== ARCHIVOS SENSIBLES Y CONFIGURACIÓN ======
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets.json
+config/local_settings.py
+
+# ====== PYTHON ======
+# Archivos compilados
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribución / empaquetado
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Instaladores
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Entornos virtuales
+minerva_env/
+venv/
+ENV/
+env/
+.venv
+
+# ====== BASES DE DATOS Y ALMACENAMIENTO ======
+# Qdrant
+data/qdrant_storage/
+qdrant_data/
+*.qdrant
+
+# SQLite
+data/sqlite/*.db
+data/sqlite/*.db-journal
+data/sqlite/*.db-wal
+data/sqlite/*.db-shm
+*.sqlite
+*.sqlite3
+*.db
+
+# Backups
+*.backup
+*.bak
+data/backups/
+
+# ====== ARCHIVOS SUBIDOS Y TEMPORALES ======
+data/uploads/*
+!data/uploads/.gitkeep
+data/temp/
+temp/
+tmp/
+*.tmp
+
+# ====== LOGS ======
+logs/
+*.log
+tika.log
+tika-server.log
+
+# ====== JUPYTER NOTEBOOKS ======
+.ipynb_checkpoints
+notebooks/.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# ====== IDEs ======
+# VSCode
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ====== SISTEMA OPERATIVO ======
+# MacOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ====== TESTING ======
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+*.cover
+*.py,cover
+.cache
+nosetests.xml
+coverage.xml
+*.coveragerc
+
+# ====== DOCUMENTACIÓN ======
+docs/_build/
+site/
+
+# ====== OLLAMA (si se descarga localmente) ======
+models/ollama/
+*.gguf
+
+# ====== TIKA ======
+tika-server*.jar
+tika-server*.jar.md5
+
+# ====== OTROS ======
+# Archivos de respaldo de editores
+*.swp
+*.swo
+*~
+
+# Archivos de caché
+.cache/
+*.cache
+
+# Archivos de profiling
+*.prof
+
+# Archivos grandes que no deben subirse
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.bin
+*.exe
+*.dll
+
+# Excepto ejemplos que sí queremos versionar
+!data/uploads/README.md
+!data/sqlite/README.md
+!data/qdrant_storage/README.md

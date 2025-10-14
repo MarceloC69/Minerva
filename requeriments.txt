@@ -1,0 +1,29 @@
+# LLM y Agentes
+crewai==0.95.0
+crewai-tools==0.17.0
+
+# Modelos locales
+ollama==0.4.9
+
+# Vector DB y Embeddings
+qdrant-client==1.12.1
+fastembed==0.4.2
+
+# Memoria y Storage
+sqlalchemy==2.0.36
+
+# Web scraping y búsqueda
+crawl4ai==0.4.247
+duckduckgo-search==7.1.0
+
+# Procesamiento de documentos
+pymupdf==1.25.4
+python-docx==1.1.2
+
+# UI
+gradio==5.10.0
+
+# Utilidades
+python-dotenv==1.0.1
+pydantic==2.10.5
+pydantic-settings==2.7.0
