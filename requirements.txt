@@ -20,8 +20,8 @@ duckduckgo-search==7.1.0
 pymupdf==1.25.4
 python-docx==1.1.2
 
-# UI
-gradio==5.10.0
+# UI - VERSIÓN ACTUALIZADA
+gradio>=5.11.0
 
 # Utilidades
 python-dotenv==1.0.1
