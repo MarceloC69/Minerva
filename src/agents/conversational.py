@@ -41,6 +41,9 @@ class ConversationalAgent(BaseAgent):
             temperature: Creatividad de las respuestas (0.0-1.0)
             log_dir: Directorio para logs
             db_manager: Gestor de base de datos
+            
+        Raises:
+            AgentExecutionError: Si no se pueden cargar los prompts
         """
         # Llamar al constructor de BaseAgent correctamente
         super().__init__(
@@ -54,7 +57,79 @@ class ConversationalAgent(BaseAgent):
         self.base_url = settings.OLLAMA_BASE_URL
         self.db_manager = db_manager
         
+        # Cargar prompts desde DB (OBLIGATORIO)
+        self._load_prompts()
+        
         self.logger.info(f"LLM configurado: {model_name}")
+    
+    def _load_prompts(self):
+        """
+        Carga prompts desde la base de datos.
+        
+        Raises:
+            AgentExecutionError: Si no se pueden cargar los prompts
+        """
+        if not self.db_manager:
+            error_msg = (
+                "❌ CRITICAL: No hay db_manager disponible.\n"
+                "El agente conversacional requiere acceso a la base de datos para cargar prompts.\n"
+                "Por favor verifica la configuración del sistema."
+            )
+            self.logger.error(error_msg)
+            raise AgentExecutionError(error_msg)
+        
+        try:
+            from src.database.prompt_manager import PromptManager
+            prompt_manager = PromptManager(self.db_manager)
+            
+            # Cargar system prompt
+            self.system_prompt = prompt_manager.get_active_prompt(
+                agent_type='conversational',
+                prompt_name='system_prompt'
+            )
+            
+            # Cargar user instruction
+            self.user_instruction = prompt_manager.get_active_prompt(
+                agent_type='conversational',
+                prompt_name='user_instruction'
+            )
+            
+            # Validar que se cargaron correctamente
+            if not self.system_prompt:
+                error_msg = (
+                    "❌ CRITICAL: No se encontró 'system_prompt' para conversational agent en la base de datos.\n"
+                    "Debes inicializar los prompts ejecutando:\n"
+                    "  python scripts/init_prompts.py --init\n"
+                    "El sistema NO puede funcionar sin prompts configurados."
+                )
+                self.logger.error(error_msg)
+                raise AgentExecutionError(error_msg)
+            
+            if not self.user_instruction:
+                error_msg = (
+                    "❌ CRITICAL: No se encontró 'user_instruction' para conversational agent en la base de datos.\n"
+                    "Debes inicializar los prompts ejecutando:\n"
+                    "  python scripts/init_prompts.py --init\n"
+                    "El sistema NO puede funcionar sin prompts configurados."
+                )
+                self.logger.error(error_msg)
+                raise AgentExecutionError(error_msg)
+            
+            self.logger.info("✅ Prompts cargados correctamente desde DB")
+                
+        except AgentExecutionError:
+            # Re-raise para que el error sea visible
+            raise
+        except Exception as e:
+            error_msg = (
+                f"❌ CRITICAL: Error inesperado cargando prompts: {e}\n"
+                f"El sistema NO puede funcionar sin prompts configurados.\n"
+                f"Por favor verifica:\n"
+                f"  1. La base de datos está accesible\n"
+                f"  2. Los prompts están inicializados: python scripts/init_prompts.py --init"
+            )
+            self.logger.error(error_msg)
+            raise AgentExecutionError(error_msg)
     
     def _build_prompt_with_history(
         self,
@@ -64,6 +139,7 @@ class ConversationalAgent(BaseAgent):
     ) -> str:
         """
         Construye el prompt incluyendo historial de conversación.
+        Usa prompts cargados desde DB.
         
         Args:
             user_message: Mensaje actual del usuario
@@ -73,32 +149,30 @@ class ConversationalAgent(BaseAgent):
         Returns:
             Prompt completo formateado
         """
-        # System prompt directo
-        system_prompt = (
-            "Eres Minerva, un asistente personal amigable y servicial. "
-            "Respondes de manera clara, concisa y natural. "
-            "Mantienes el contexto de la conversación y recuerdas lo que el usuario te ha contado."
-        )
-        
         # Construir historial
         history_text = ""
         if history:
-            history_text = "\n### Historial de conversación:\n"
+            history_text = "\n### HISTORIAL COMPLETO DE LA CONVERSACIÓN:\n"
             for msg in history[-10:]:  # Últimos 10 mensajes
                 role = "Usuario" if msg.role == "user" else "Minerva"
                 history_text += f"{role}: {msg.content}\n"
             history_text += "\n"
         
-        # Construir prompt completo
+        # Construir prompt completo usando prompts de DB
         prompt_parts = [
-            system_prompt,
+            self.system_prompt,  # Cargado desde DB
             history_text,
         ]
         
         if context:
             prompt_parts.append(f"\n### Contexto adicional:\n{context}\n")
         
-        prompt_parts.append(f"\n### Usuario: {user_message}\n\n### Minerva:")
+        # Agregar mensaje del usuario con instrucción
+        prompt_parts.append(
+            f"\n### NUEVA PREGUNTA DEL USUARIO:\n{user_message}\n\n"
+            f"{self.user_instruction}\n\n"  # Cargado desde DB
+            f"Minerva:"
+        )
         
         return "\n".join(prompt_parts)
     
@@ -165,9 +239,18 @@ class ConversationalAgent(BaseAgent):
                         conversation_id=conversation_id,
                         limit=20
                     )
-                    self.logger.info(f"Historial recuperado: {len(history)} mensajes")
+                    self.logger.info(f"✅ Historial recuperado: {len(history)} mensajes")
+                    # DEBUG: Mostrar historial
+                    if history:
+                        self.logger.info("📜 Mensajes en historial:")
+                        for msg in history[-5:]:  # Últimos 5
+                            self.logger.info(f"  - {msg.role}: {msg.content[:60]}...")
                 except Exception as e:
-                    self.logger.warning(f"No se pudo recuperar historial: {e}")
+                    self.logger.warning(f"❌ No se pudo recuperar historial: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                self.logger.info(f"⚠️ NO recuperando historial: db_manager={bool(self.db_manager)}, conv_id={conversation_id}")
             
             # Guardar mensaje del usuario en DB
             if self.db_manager and conversation_id:

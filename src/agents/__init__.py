@@ -1,4 +1,3 @@
-
 # src/agents/__init__.py - Módulo de agentes
 """
 Módulo de agentes de Minerva.

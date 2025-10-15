@@ -1,3 +1,4 @@
+# src/database/schema.py - Esquema de base de datos
 """
 Esquema de la base de datos SQLite para Minerva.
 """
@@ -18,11 +19,11 @@ class Conversation(Base):
     __tablename__ = 'conversations'
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    title = Column(String(200), nullable=True)  # Título opcional de la conversación
+    title = Column(String(200), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
-    is_active = Column(Boolean, default=True)  # Conversación activa o archivada
-    extra_metadata = Column(JSON, nullable=True)  # Metadata adicional (tags, etc.)
+    is_active = Column(Boolean, default=True)
+    extra_metadata = Column(JSON, nullable=True)
     
     def __repr__(self):
         return f"<Conversation(id={self.id}, title='{self.title}', created_at={self.created_at})>"
@@ -36,19 +37,19 @@ class Message(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     conversation_id = Column(Integer, ForeignKey('conversations.id'), nullable=False)
-    role = Column(String(20), nullable=False)  # 'user' o 'assistant'
-    content = Column(Text, nullable=False)  # Contenido del mensaje
+    role = Column(String(20), nullable=False)
+    content = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=func.now(), nullable=False)
     
     # Metadata técnica
-    agent_type = Column(String(50), nullable=True)  # Tipo de agente que respondió
-    model = Column(String(100), nullable=True)  # Modelo usado (ej: phi3)
-    temperature = Column(Float, nullable=True)  # Temperatura usada
-    tokens = Column(Integer, nullable=True)  # Número de tokens generados
+    agent_type = Column(String(50), nullable=True)
+    model = Column(String(100), nullable=True)
+    temperature = Column(Float, nullable=True)
+    tokens = Column(Integer, nullable=True)
     
     # Contexto usado
-    had_context = Column(Boolean, default=False)  # Si usó contexto de RAG/búsqueda
-    context_source = Column(String(50), nullable=True)  # 'qdrant', 'web', etc.
+    had_context = Column(Boolean, default=False)
+    context_source = Column(String(50), nullable=True)
     
     # Metadata adicional
     extra_metadata = Column(JSON, nullable=True)
@@ -66,23 +67,23 @@ class Document(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     filename = Column(String(255), nullable=False)
     original_path = Column(String(500), nullable=True)
-    file_type = Column(String(20), nullable=False)  # 'pdf', 'docx', 'txt', etc.
-    file_size = Column(Integer, nullable=True)  # Tamaño en bytes
+    file_type = Column(String(20), nullable=False)
+    file_size = Column(Integer, nullable=True)
     
     # Procesamiento
     processed_at = Column(DateTime, default=func.now(), nullable=False)
-    chunk_count = Column(Integer, nullable=True)  # Número de chunks creados
-    total_tokens = Column(Integer, nullable=True)  # Tokens aproximados
+    chunk_count = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
     
     # Qdrant
-    qdrant_collection = Column(String(100), nullable=True)  # Colección en Qdrant
-    qdrant_ids = Column(JSON, nullable=True)  # IDs de vectores en Qdrant
+    qdrant_collection = Column(String(100), nullable=True)
+    qdrant_ids = Column(JSON, nullable=True)
     
     # Metadata del documento
     title = Column(String(300), nullable=True)
     author = Column(String(200), nullable=True)
     summary = Column(Text, nullable=True)
-    tags = Column(JSON, nullable=True)  # Lista de tags
+    tags = Column(JSON, nullable=True)
     
     # Estado
     is_indexed = Column(Boolean, default=True)
@@ -100,15 +101,15 @@ class AgentLog(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     agent_name = Column(String(100), nullable=False)
-    agent_type = Column(String(50), nullable=False)  # 'conversational', 'knowledge', etc.
+    agent_type = Column(String(50), nullable=False)
     
     # Acción
-    action = Column(String(100), nullable=False)  # 'chat', 'search', 'process_doc', etc.
-    status = Column(String(20), nullable=False)  # 'success', 'error', 'warning'
+    action = Column(String(100), nullable=False)
+    status = Column(String(20), nullable=False)
     
     # Tiempo
     timestamp = Column(DateTime, default=func.now(), nullable=False)
-    duration_ms = Column(Integer, nullable=True)  # Duración en milisegundos
+    duration_ms = Column(Integer, nullable=True)
     
     # Detalles
     input_summary = Column(Text, nullable=True)
@@ -149,3 +150,39 @@ class SystemStats(Base):
     
     def __repr__(self):
         return f"<SystemStats(timestamp={self.timestamp}, conversations={self.total_conversations})>"
+
+
+class PromptVersion(Base):
+    """
+    Tabla de versiones de prompts para agentes.
+    Permite versionado y rollback de prompts.
+    """
+    __tablename__ = 'prompt_versions'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # Identificación
+    agent_type = Column(String(50), nullable=False)  # 'conversational', 'knowledge', 'web'
+    prompt_name = Column(String(100), nullable=False)  # 'system_prompt', 'rag_prompt', etc.
+    version = Column(Integer, nullable=False)  # Versión incremental
+    
+    # Contenido
+    content = Column(Text, nullable=False)  # El prompt en sí
+    description = Column(Text, nullable=True)  # Descripción de los cambios
+    
+    # Metadata
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    created_by = Column(String(100), default='system', nullable=False)
+    is_active = Column(Boolean, default=False)  # Solo una versión activa por (agent_type, prompt_name)
+    
+    # Variables del prompt
+    variables = Column(JSON, nullable=True)  # Variables esperadas en el prompt (ej: {user_message}, {history})
+    
+    # Métricas (opcionales, para futuro)
+    usage_count = Column(Integer, default=0)  # Cuántas veces se usó
+    avg_response_quality = Column(Float, nullable=True)  # Rating promedio
+    
+    extra_metadata = Column(JSON, nullable=True)
+    
+    def __repr__(self):
+        return f"<PromptVersion(id={self.id}, agent='{self.agent_type}', name='{self.prompt_name}', v{self.version}, active={self.is_active})>"

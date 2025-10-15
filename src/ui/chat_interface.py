@@ -191,17 +191,19 @@ def initialize_conversation():
         
         # Crear nueva conversación en la DB
         from datetime import datetime
-        conv = current_router.db_manager.create_conversation(
+        conv = current_router.conversational_agent.db_manager.create_conversation(
             title=f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             metadata={'source': 'gradio_ui'}
         )
         current_conversation_id = conv.id
         
-        logger.info(f"Nueva conversación creada: ID={current_conversation_id}")
+        logger.info(f"✅ Nueva conversación creada: ID={current_conversation_id}")
         return current_conversation_id
         
     except Exception as e:
-        logger.error(f"Error creando conversación: {e}")
+        logger.error(f"❌ Error creando conversación: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -441,8 +443,12 @@ def create_interface() -> gr.Blocks:
         # Event handlers
         
         # Crear conversación al cargar la interfaz
+        def init_on_load():
+            initialize_conversation()
+            return None
+        
         interface.load(
-            fn=initialize_conversation,
+            fn=init_on_load,
             inputs=None,
             outputs=None
         )
