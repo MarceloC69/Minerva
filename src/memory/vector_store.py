@@ -1,79 +1,196 @@
+"""
+Gestor de memoria vectorial usando Qdrant.
+"""
+
+from typing import List, Dict, Any, Optional
+import uuid
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
-from typing import List, Dict, Optional
-import uuid
-import numpy as np
+
 
 class VectorMemory:
-    """Gestión de memoria vectorial usando Qdrant"""
+    """
+    Gestor de memoria vectorial con Qdrant.
     
-    def __init__(self, path: str, collection_name: str, vector_size: int):
-        print(f"Inicializando Qdrant en: {path}")
+    Funcionalidades:
+    - Almacenar embeddings con metadata
+    - Buscar por similitud semántica
+    - Gestionar colecciones
+    """
+    
+    def __init__(
+        self,
+        path: str,
+        collection_name: str,
+        vector_size: int = 384
+    ):
+        """
+        Inicializa el gestor de memoria vectorial.
+        
+        Args:
+            path: Ruta para almacenamiento local de Qdrant
+            collection_name: Nombre de la colección por defecto
+            vector_size: Dimensión de los vectores
+        """
         self.client = QdrantClient(path=path)
         self.collection_name = collection_name
-        self._ensure_collection(vector_size)
-        print(f"✓ Colección '{collection_name}' lista")
-    
-    def _ensure_collection(self, vector_size: int):
-        collections = self.client.get_collections().collections
-        exists = any(c.name == self.collection_name for c in collections)
+        self.vector_size = vector_size
         
-        if not exists:
-            print(f"Creando colección '{self.collection_name}'...")
+        # Crear colección si no existe
+        self._ensure_collection()
+    
+    def _ensure_collection(self, collection_name: Optional[str] = None):
+        """Asegura que la colección existe."""
+        col_name = collection_name or self.collection_name
+        
+        collections = self.client.get_collections().collections
+        collection_names = [col.name for col in collections]
+        
+        if col_name not in collection_names:
             self.client.create_collection(
-                collection_name=self.collection_name,
+                collection_name=col_name,
                 vectors_config=VectorParams(
-                    size=vector_size,
+                    size=self.vector_size,
                     distance=Distance.COSINE
                 )
             )
     
     def add_texts(
-        self, 
-        texts: List[str], 
-        embeddings: List[np.ndarray], 
-        metadata: List[Dict]
-    ) -> List[str]:
-        ids = [str(uuid.uuid4()) for _ in texts]
+        self,
+        texts: List[str],
+        embeddings: List[List[float]],
+        payloads: Optional[List[Dict[str, Any]]] = None,
+        ids: Optional[List[str]] = None,
+        collection_name: Optional[str] = None
+    ):
+        """
+        Agrega textos con sus embeddings a la memoria.
         
+        Args:
+            texts: Lista de textos
+            embeddings: Lista de embeddings
+            payloads: Metadata adicional para cada texto (opcional)
+            ids: IDs personalizados para los puntos (opcional)
+            collection_name: Nombre de colección (usa default si no se especifica)
+        """
+        col_name = collection_name or self.collection_name
+        self._ensure_collection(col_name)
+        
+        # Preparar payloads
+        if payloads is None:
+            payloads = [{'text': text} for text in texts]
+        else:
+            # Asegurar que el texto esté en el payload
+            for i, payload in enumerate(payloads):
+                if 'text' not in payload:
+                    payload['text'] = texts[i]
+        
+        # Generar IDs si no se proporcionan
+        if ids is None:
+            ids = [str(uuid.uuid4()) for _ in texts]
+        
+        # Crear puntos
         points = [
             PointStruct(
-                id=id_,
-                vector=embedding.tolist(),
-                payload={"text": text, **meta}
+                id=point_id,
+                vector=embedding,
+                payload=payload
             )
-            for id_, text, embedding, meta in zip(ids, texts, embeddings, metadata)
+            for point_id, embedding, payload in zip(ids, embeddings, payloads)
         ]
         
+        # Subir a Qdrant
         self.client.upsert(
-            collection_name=self.collection_name,
+            collection_name=col_name,
             points=points
         )
-        return ids
     
     def search(
-        self, 
-        query_embedding: np.ndarray, 
-        top_k: int = 5, 
-        filters: Optional[Dict] = None
-    ) -> List[Dict]:
+        self,
+        query_text: str = None,
+        query_embedding: List[float] = None,
+        limit: int = 5,
+        collection_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca vectores similares.
+        
+        Args:
+            query_text: Texto de consulta (se ignora, se usa query_embedding)
+            query_embedding: Embedding de la consulta
+            limit: Número máximo de resultados
+            collection_name: Nombre de colección
+            
+        Returns:
+            Lista de resultados con score y payload
+        """
+        col_name = collection_name or self.collection_name
+        
+        if query_embedding is None:
+            raise ValueError("query_embedding es requerido")
+        
         results = self.client.search(
-            collection_name=self.collection_name,
-            query_vector=query_embedding.tolist(),
-            limit=top_k,
-            query_filter=filters
+            collection_name=col_name,
+            query_vector=query_embedding,
+            limit=limit
         )
         
         return [
             {
-                "id": hit.id,
-                "score": hit.score,
-                "text": hit.payload.get("text"),
-                "metadata": {k: v for k, v in hit.payload.items() if k != "text"}
+                'id': result.id,
+                'score': result.score,
+                'payload': result.payload
             }
-            for hit in results
+            for result in results
         ]
     
-    def delete_collection(self):
-        self.client.delete_collection(collection_name=self.collection_name)
-        print(f"✓ Colección '{self.collection_name}' eliminada")
+    def delete_point(
+        self,
+        point_id: str,
+        collection_name: Optional[str] = None
+    ):
+        """
+        Elimina un punto por su ID.
+        
+        Args:
+            point_id: ID del punto
+            collection_name: Nombre de colección
+        """
+        col_name = collection_name or self.collection_name
+        
+        self.client.delete(
+            collection_name=col_name,
+            points_selector=[point_id]
+        )
+    
+    def delete_collection(self, collection_name: Optional[str] = None):
+        """
+        Elimina una colección completa.
+        
+        Args:
+            collection_name: Nombre de la colección (usa default si no se especifica)
+        """
+        col_name = collection_name or self.collection_name
+        self.client.delete_collection(collection_name=col_name)
+    
+    def get_collection_info(self, collection_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Obtiene información sobre una colección.
+        
+        Args:
+            collection_name: Nombre de colección
+            
+        Returns:
+            Diccionario con información de la colección
+        """
+        col_name = collection_name or self.collection_name
+        
+        info = self.client.get_collection(collection_name=col_name)
+        
+        return {
+            'name': col_name,
+            'vectors_count': info.vectors_count,
+            'points_count': info.points_count,
+            'status': info.status
+        }

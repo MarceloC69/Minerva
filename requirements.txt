@@ -1,29 +1,33 @@
-# LLM y Agentes
-crewai==0.95.0
-crewai-tools==0.17.0
+# Core dependencies
+qdrant-client>=1.11.0
+fastembed>=0.2.0
+ollama>=0.5.3
+requests>=2.31.0
+httpx>=0.25.0  # Rango flexible
 
-# Modelos locales
-ollama==0.4.9
+# Database
+sqlalchemy>=2.0.25
+alembic>=1.13.0
 
-# Vector DB y Embeddings
-qdrant-client==1.12.1
-fastembed==0.4.2
+# Document processing
+PyMuPDF>=1.23.0
+python-docx>=1.1.0
+python-magic>=0.4.27
 
-# Memoria y Storage
-sqlalchemy==2.0.36
+# Utilities
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+loguru>=0.7.0
 
-# Web scraping y búsqueda
-crawl4ai==0.4.247
-duckduckgo-search==7.1.0
+# UI
+gradio>=4.44.0
 
-# Procesamiento de documentos
-pymupdf==1.25.4
-python-docx==1.1.2
+# DuckDuckGo search (para Fase 4)
+duckduckgo-search>=4.1.0
 
-# UI - VERSIÓN ACTUALIZADA
-gradio>=5.11.0
-
-# Utilidades
-python-dotenv==1.0.1
-pydantic==2.10.5
-pydantic-settings==2.7.0
+# Optional/Development (descomenta si necesitas)
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# black>=23.12.0
+# flake8>=7.0.0

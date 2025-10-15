@@ -52,7 +52,9 @@ class Settings(BaseSettings):
     MAX_SEARCH_RESULTS: int = 5
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
-    
+
+    KNOWLEDGE_THRESHOLD: float = 0.4
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         # Crear directorios necesarios

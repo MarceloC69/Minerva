@@ -1,0 +1,40 @@
+
+    Minerva - Asistente de IA Personal Local
+    
+    ¿Qué es Minerva?
+    Minerva es un asistente de inteligencia artificial que funciona completamente 
+    en tu computadora local, garantizando privacidad total y sin necesidad de 
+    conexión a internet para funcionar.
+    
+    Características principales:
+    - Privacidad absoluta: Todos los datos permanecen en tu equipo
+    - Memoria persistente: Recuerda todas tus conversaciones
+    - Procesamiento de documentos: Lee y aprende de PDFs, DOCX y archivos de texto
+    - Sistema de confianza: Clasifica el conocimiento en alta, media y baja confianza
+    - Funcionamiento offline: No requiere internet una vez configurado
+    
+    Stack tecnológico:
+    Minerva utiliza varias tecnologías de código abierto:
+    - Ollama con modelo Phi-3 para generación de lenguaje natural
+    - FastEmbed con all-MiniLM-L6-v2 para embeddings semánticos
+    - Qdrant como base de datos vectorial (modo local)
+    - SQLite para almacenamiento de conversaciones y metadata
+    - Gradio para la interfaz de usuario web
+    - Python 3.12 como lenguaje base
+    
+    Arquitectura del sistema:
+    El Router Inteligente es el componente central que analiza cada consulta.
+    Busca proactivamente en la base de conocimiento vectorial.
+    Decide automáticamente qué agente debe responder.
+    El Agente Conversacional maneja charlas generales y preguntas casuales.
+    El Agente de Conocimiento responde usando RAG sobre documentos indexados.
+    El Agente Web buscará información actualizada en internet (próximamente).
+    
+    Futuro de Minerva:
+    Las próximas versiones incluirán:
+    - Reconocimiento y síntesis de voz
+    - Análisis de imágenes mediante cámara
+    - Control del sistema operativo para automatización
+    - Integración con calendarios y emails
+    - Agente de auto-mejora que optimiza el sistema
+    

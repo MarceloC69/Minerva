@@ -1,0 +1,18 @@
+
+    Minerva es un asistente de IA personal que corre completamente en local.
+    
+    Características principales:
+    - Privacidad total: Todo se ejecuta en tu computadora
+    - Memoria persistente: Recuerda conversaciones anteriores
+    - Aprendizaje de documentos: Puede leer y aprender de tus archivos
+    - Sistema de confianza: Diferencia entre conocimiento de alta, media y baja confianza
+    
+    Arquitectura:
+    Minerva utiliza Ollama con el modelo Phi-3 para generación de texto.
+    Para embeddings usa FastEmbed con el modelo all-MiniLM-L6-v2.
+    La memoria vectorial se gestiona con Qdrant en modo local.
+    Las conversaciones se guardan en SQLite.
+    
+    Futuro:
+    En el futuro, Minerva tendrá capacidades de voz, cámara y control del sistema operativo.
+    
