@@ -1,61 +1,58 @@
-# src/crew/tools/memory_search_tool.py - v1.0.1
-"""
-Tool para buscar en la memoria persistente (base de datos).
-"""
+# ============================================================
+# src/crew/tools/memory_search_tool.py
+# ============================================================
+"""Tool de CrewAI para buscar en la memoria de mem0."""
 
-from typing import Any
-from crewai_tools import BaseTool
+from crewai.tools import BaseTool
+from typing import Type, Optional, Any
+from pydantic import BaseModel, Field
+
+
+class MemorySearchInput(BaseModel):
+    """Input para búsqueda en memoria."""
+    query: str = Field(..., description="Query para buscar en la memoria del usuario")
+    limit: int = Field(default=3, description="Número máximo de resultados")
 
 
 class MemorySearchTool(BaseTool):
     """
-    Tool para buscar mensajes en la base de datos.
+    Tool para buscar información en la memoria persistente (mem0).
+    
+    Uso: Cuando necesites recordar información sobre el usuario,
+    conversaciones pasadas, o contexto histórico.
     """
     
-    name: str = "memory_search"
-    description: str = (
-        "Busca en conversaciones pasadas. "
-        "Útil para encontrar información mencionada anteriormente. "
-        "Input: texto a buscar"
-    )
+    name: str = "search_memory"
+    description: str = """Busca en la memoria persistente del usuario.
+    Usa esta herramienta cuando necesites:
+    - Recordar información del usuario (nombre, preferencias, etc.)
+    - Contexto de conversaciones pasadas
+    - Hechos mencionados anteriormente
     
-    # IMPORTANTE: Declarar db_manager como atributo con tipo Any
-    db_manager: Any = None
+    Input: query (str) - pregunta o tema a buscar
+    Output: Información relevante de la memoria
+    """
+    args_schema: Type[BaseModel] = MemorySearchInput
     
-    def __init__(self, db_manager, **kwargs):
-        """
-        Inicializa el tool.
-        
-        Args:
-            db_manager: DatabaseManager
-        """
+    def __init__(self, mem0_wrapper: Any, **kwargs):
         super().__init__(**kwargs)
-        self.db_manager = db_manager
+        # Usar atributo privado para evitar conflicto con Pydantic
+        object.__setattr__(self, '_mem0', mem0_wrapper)
     
-    def _run(self, query: str) -> str:
-        """
-        Ejecuta la búsqueda.
-        
-        Args:
-            query: Texto a buscar
-            
-        Returns:
-            Resultados formateados
-        """
+    def _run(self, query: str, limit: int = 3) -> str:
+        """Ejecuta la búsqueda en memoria."""
         try:
-            messages = self.db_manager.search_messages(query=query, limit=5)
+            memories = self._mem0.search(query=query, limit=limit)
             
-            if not messages:
-                return f"No se encontraron mensajes con '{query}'"
+            if not memories:
+                return "No encontré información relevante en la memoria."
             
-            results = []
-            for msg in messages:
-                results.append(
-                    f"[{msg.timestamp.strftime('%Y-%m-%d %H:%M')}] "
-                    f"{msg.role}: {msg.content[:150]}..."
-                )
+            result = "📚 Información de la memoria:\n\n"
+            for i, mem in enumerate(memories, 1):
+                memory_text = mem.get('memory', mem.get('text', str(mem)))
+                result += f"{i}. {memory_text}\n"
             
-            return "\n\n".join(results)
+            return result
             
         except Exception as e:
-            return f"Error buscando en memoria: {e}"
+            return f"Error buscando en memoria: {str(e)}"

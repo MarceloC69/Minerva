@@ -1,135 +1,159 @@
-# src/crew/minerva_crew.py - v3.0.0 - Router inteligente con LLM
+# src/crew/minerva_crew.py - v6.0.0 - Con CrewAI real + mem0
 """
-Coordinador CrewAI de Minerva CON MEMORIA PERSISTENTE.
-Orquesta todos los agentes y gestiona la memoria.
-Router inteligente usando LLM para clasificación (sin keywords hardcodeadas).
+Coordinador principal de Minerva usando CrewAI.
+Orquesta agentes con memoria persistente (mem0).
 """
 
 from typing import Dict, Any, Optional
 import logging
-import requests
 
-from src.agents.conversational import ConversationalAgent
-from src.agents.knowledge import KnowledgeAgent
-from src.agents.web import WebAgent
-from .agents.memory_agent import MemoryAgent
+from crewai import Agent, Task, Crew, Process
+from crewai.tools import BaseTool
+
+from src.memory.mem0_wrapper import Mem0Wrapper
+from src.crew.tools.memory_search_tool import MemorySearchTool
+from src.crew.tools.source_retrieval_tool import SourceRetrievalTool
+from src.crew.tools.document_search_tool import DocumentSearchTool
+from config.settings import settings
 
 
 class MinervaCrew:
     """
-    Crew principal de Minerva que coordina todos los agentes.
+    Crew principal de Minerva con CrewAI + mem0.
     
-    Agentes:
-    - MemoryAgent: Busca en DB (conversaciones, fuentes, metadata)
-    - ConversationalAgent: Chat general CON MEMORIA PERSISTENTE
-    - KnowledgeAgent: RAG/documentos
-    - WebAgent: Búsqueda internet
-    
-    Router: Usa LLM para clasificar intención (sin keywords)
+    Componentes:
+    - mem0: Memoria persistente compartida
+    - 3 Agentes CrewAI: Conversational, Knowledge, Web
+    - Tools: MemorySearch, SourceRetrieval, DocumentSearch
     """
     
     def __init__(
         self,
-        conversational_agent: ConversationalAgent,
-        knowledge_agent: KnowledgeAgent,
-        web_agent: WebAgent,
         db_manager,
         indexer,
-        memory_service=None
+        web_search_service
     ):
         """
-        Inicializa el crew de Minerva.
+        Inicializa MinervaCrew.
         
         Args:
-            conversational_agent: Agente conversacional existente
-            knowledge_agent: Agente de conocimiento existente
-            web_agent: Agente web existente
-            db_manager: Database manager para memoria
-            indexer: Document indexer
-            memory_service: Servicio de memoria persistente (deprecado)
+            db_manager: DatabaseManager para SQLite
+            indexer: DocumentIndexer para RAG
+            web_search_service: Servicio de búsqueda web
         """
         self.logger = logging.getLogger("minerva.crew")
-        
-        # Agentes existentes
-        self.conversational_agent = conversational_agent
-        self.knowledge_agent = knowledge_agent
-        self.web_agent = web_agent
         self.db_manager = db_manager
         self.indexer = indexer
+        self.web_search = web_search_service
         
-        # Servicio de memoria persistente (deprecado pero mantenido para compatibilidad)
-        self.memory_service = memory_service
-        if self.memory_service:
-            self.logger.info("✅ MemoryService integrado en MinervaCrew")
-        else:
-            self.logger.warning("⚠️ MinervaCrew sin MemoryService")
+        # Inicializar mem0
+        self.logger.info("🧠 Inicializando mem0...")
+        self.mem0 = Mem0Wrapper(user_id="marcelo")
         
-        # Crear agente de memoria (para búsquedas en DB)
-        self.memory_agent = MemoryAgent(
-            db_manager=db_manager,
-            logger=self.logger
+        # Inicializar Tools
+        self.logger.info("🔧 Inicializando Tools...")
+        self.memory_search_tool = MemorySearchTool(mem0_wrapper=self.mem0)
+        self.source_retrieval_tool = SourceRetrievalTool(db_manager=db_manager)
+        self.document_search_tool = DocumentSearchTool(indexer=indexer)
+        
+        # Inicializar Agentes
+        self.logger.info("🤖 Inicializando Agentes CrewAI...")
+        self._init_agents()
+        
+        # Crew (se crea por demanda según la query)
+        self.crew = None
+        
+        self.logger.info("✅ MinervaCrew con CrewAI + mem0 inicializado")
+    
+    def _init_agents(self):
+        """Inicializa los agentes de CrewAI."""
+        
+        # Configuración de LLM para Ollama
+        from langchain_community.llms import Ollama
+        llm = Ollama(
+            model=settings.OLLAMA_MODEL,
+            base_url=settings.OLLAMA_BASE_URL,
+            temperature=0.7
         )
         
-        # Cargar prompt de clasificación desde DB
-        self._load_router_prompt()
+        # === CONVERSATIONAL AGENT ===
+        self.conversational_agent = Agent(
+            role="Conversational Assistant",
+            goal="Ayudar al usuario con conversaciones naturales, recordando información previa",
+            backstory="""Eres Minerva, un asistente personal inteligente con memoria persistente.
+            Recuerdas todas las conversaciones anteriores y usas esa información para dar respuestas
+            personalizadas y contextualizadas. Siempre eres amable, clara y directa.""",
+            tools=[self.memory_search_tool],
+            llm=llm,
+            verbose=True,
+            allow_delegation=False
+        )
         
-        self.logger.info("✅ MinervaCrew inicializado con router inteligente (LLM)")
+        # === KNOWLEDGE AGENT ===
+        self.knowledge_agent = Agent(
+            role="Knowledge Specialist",
+            goal="Responder preguntas usando documentos indexados con precisión",
+            backstory="""Eres un especialista en extraer información de documentos técnicos.
+            Tienes acceso a todos los documentos que el usuario ha subido (PDF, DOCX, etc.)
+            y puedes buscar información específica en ellos. Siempre citas tus fuentes.""",
+            tools=[self.document_search_tool],
+            llm=llm,
+            verbose=True,
+            allow_delegation=False
+        )
+        
+        # === WEB AGENT ===
+        self.web_agent = Agent(
+            role="Web Research Specialist",
+            goal="Buscar información actualizada en internet cuando sea necesario",
+            backstory="""Eres un investigador experto en búsqueda web.
+            Tienes acceso a internet y puedes buscar información actualizada sobre
+            noticias, clima, precios, eventos recientes, etc. Siempre proporcionas fuentes.""",
+            tools=[],  # Web search se maneja custom por las limitaciones de la API
+            llm=llm,
+            verbose=True,
+            allow_delegation=False
+        )
+        
+        self.logger.info("✅ 3 Agentes CrewAI inicializados")
     
-    def _load_router_prompt(self):
-        """Carga el prompt de clasificación desde la DB."""
-        try:
-            from src.database.prompt_manager import PromptManager
-            pm = PromptManager(self.db_manager)
-            
-            self.classification_prompt_template = pm.get_active_prompt(
-                agent_type='router',
-                prompt_name='classification_prompt'
-            )
-            
-            if not self.classification_prompt_template:
-                self.logger.warning("⚠️ No se encontró prompt de router en DB, usando fallback")
-                # Fallback temporal si no existe el prompt
-                self.classification_prompt_template = """Clasifica esta pregunta en UNA categoría:
-
-CATEGORÍAS:
-1. source_request - Pregunta por fuentes/links
-2. web_search - Necesita info actualizada de internet
-3. knowledge - Pregunta sobre documentos técnicos
-4. conversation - Todo lo demás (preguntas personales, chat general)
-
-PREGUNTA: {query}
-
-Responde SOLO con el nombre de la categoría.
-CATEGORÍA:"""
-            else:
-                self.logger.info("✅ Prompt de router cargado desde DB")
-                
-        except Exception as e:
-            self.logger.error(f"Error cargando prompt router: {e}")
-            # Fallback básico
-            self.classification_prompt_template = "Clasifica: {query}\nCategoría:"
-    
-    def _detect_intent_with_llm(self, query: str) -> str:
+    def _classify_intent(self, query: str) -> str:
         """
-        Usa el LLM para detectar intención (NO keywords).
+        Clasifica la intención del usuario usando el LLM.
         
         Args:
             query: Query del usuario
             
         Returns:
-            Intención detectada: 'source_request', 'web_search', 'knowledge', 'conversation'
+            'conversation', 'knowledge', 'web', 'source_request'
         """
-        
-        # Construir prompt con el template desde DB
-        classification_prompt = self.classification_prompt_template.format(query=query)
-        
         try:
+            # Cargar prompt de clasificación desde DB
+            from src.database.prompt_manager import PromptManager
+            pm = PromptManager(self.db_manager)
+            
+            classification_prompt_template = pm.get_active_prompt(
+                agent_type='router',
+                prompt_name='classification_prompt'
+            )
+            
+            if not classification_prompt_template:
+                self.logger.warning("No se encontró prompt de router, usando fallback")
+                classification_prompt_template = """Clasifica: {query}
+Categorías: conversation, knowledge, web, source_request
+Categoría:"""
+            
+            # Construir prompt
+            classification_prompt = classification_prompt_template.format(query=query)
+            
+            # Llamar a Ollama
+            import requests
             response = requests.post(
-                f"{self.conversational_agent.base_url}/api/generate",
+                f"{settings.OLLAMA_BASE_URL}/api/generate",
                 json={
-                    "model": self.conversational_agent.model_name,
+                    "model": settings.OLLAMA_MODEL,
                     "prompt": classification_prompt,
-                    "temperature": 0.1,  # Muy determinista
+                    "temperature": 0.1,
                     "stream": False
                 },
                 timeout=10
@@ -139,56 +163,20 @@ CATEGORÍA:"""
             result = response.json()
             intent = result.get('response', '').strip().lower()
             
-            # Validar que sea una categoría válida
-            valid_intents = ['source_request', 'web_search', 'knowledge', 'conversation']
+            # Validar
+            valid_intents = ['conversation', 'knowledge', 'web', 'source_request']
+            for valid in valid_intents:
+                if valid in intent:
+                    self.logger.info(f"🎯 Intención clasificada: {valid}")
+                    return valid
             
-            # Limpiar la respuesta (a veces el LLM agrega texto extra)
-            for valid_intent in valid_intents:
-                if valid_intent in intent:
-                    intent = valid_intent
-                    break
-            
-            if intent not in valid_intents:
-                self.logger.warning(f"Intent inválido '{intent}', usando 'conversation'")
-                intent = 'conversation'
-            
-            self.logger.info(f"🤖 LLM clasificó como: {intent}")
-            return intent
+            # Fallback
+            self.logger.warning(f"Intención inválida '{intent}', usando 'conversation'")
+            return 'conversation'
             
         except Exception as e:
-            self.logger.error(f"Error en clasificación LLM: {e}")
-            return self._detect_intent_fallback(query)
-    
-    def _detect_intent_fallback(self, query: str) -> str:
-        """
-        Fallback simple si falla el LLM.
-        SOLO para casos de emergencia, con keywords mínimas.
-        """
-        query_lower = query.lower()
-        
-        # Solo los casos MÁS obvios
-        if 'fuente' in query_lower or 'link' in query_lower or 'url' in query_lower:
-            return 'source_request'
-        
-        if any(word in query_lower for word in ['hoy', 'ahora', 'clima', 'temperatura', 'noticia']):
-            return 'web_search'
-        
-        # Verificar si hay docs antes de usar knowledge
-        if self.indexer.has_documents():
-            try:
-                results = self.indexer.search_documents(
-                    query=query,
-                    collection_name='knowledge_base',
-                    limit=1,
-                    score_threshold=0.6
-                )
-                if results:
-                    return 'knowledge'
-            except:
-                pass
-        
-        # Por defecto: conversación
-        return 'conversation'
+            self.logger.error(f"Error clasificando intención: {e}")
+            return 'conversation'
     
     def route(
         self,
@@ -196,37 +184,39 @@ CATEGORÍA:"""
         conversation_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Rutea el mensaje al agente apropiado usando LLM.
+        Procesa un mensaje del usuario.
         
         Args:
             user_message: Mensaje del usuario
             conversation_id: ID de conversación
             
         Returns:
-            Diccionario con respuesta y metadata
+            Dict con respuesta y metadata
         """
         try:
-            self.logger.info(f"🎯 MinervaCrew procesando: '{user_message[:50]}...'")
+            self.logger.info(f"📨 Procesando: '{user_message[:50]}...'")
             
-            # Detectar intención CON LLM
-            intent = self._detect_intent_with_llm(user_message)
-            self.logger.info(f"🔍 Intención detectada: {intent}")
+            # Clasificar intención
+            intent = self._classify_intent(user_message)
+            
+            # Obtener contexto de mem0
+            memory_context = self.mem0.get_relevant_context(user_message, limit=3)
             
             # Rutear según intención
             if intent == 'source_request':
                 return self._handle_source_request(user_message, conversation_id)
             
-            elif intent == 'web_search':
-                return self._handle_web_search(user_message, conversation_id)
+            elif intent == 'web':
+                return self._handle_web_search(user_message, conversation_id, memory_context)
             
             elif intent == 'knowledge':
-                return self._handle_knowledge_query(user_message, conversation_id)
+                return self._handle_knowledge(user_message, conversation_id, memory_context)
             
-            else:  # 'conversation' (incluye preguntas personales)
-                return self._handle_conversation(user_message, conversation_id)
+            else:  # conversation
+                return self._handle_conversation(user_message, conversation_id, memory_context)
         
         except Exception as e:
-            self.logger.error(f"❌ Error en crew: {e}", exc_info=True)
+            self.logger.error(f"❌ Error en route: {e}", exc_info=True)
             return {
                 'answer': f"Ocurrió un error: {str(e)}",
                 'agent_used': 'error',
@@ -240,95 +230,235 @@ CATEGORÍA:"""
         conversation_id: Optional[int]
     ) -> Dict[str, Any]:
         """Maneja solicitudes de fuentes."""
-        self.logger.info("📋 Buscando fuentes del último mensaje...")
+        self.logger.info("📋 Recuperando fuentes...")
         
-        result = self.memory_agent.get_last_sources(conversation_id)
-        
-        if result['found']:
-            sources = result['sources']
-            
-            if sources:
-                answer = "Las fuentes que usé fueron:\n\n"
-                for i, source in enumerate(sources, 1):
-                    answer += f"{i}. **{source['title']}**\n"
-                    answer += f"   {source['url']}\n\n"
-            else:
-                answer = "No encontré fuentes en mi última respuesta. Es posible que haya usado mi conocimiento interno."
-            
-            return {
-                'answer': answer,
-                'agent_used': 'memory',
-                'confidence': 'Alta',
-                'sources': sources
-            }
-        else:
-            return {
-                'answer': "No tengo fuentes de mi última respuesta en la memoria.",
-                'agent_used': 'memory',
-                'confidence': 'Baja',
-                'sources': []
-            }
-    
-    def _handle_web_search(
-        self,
-        user_message: str,
-        conversation_id: Optional[int]
-    ) -> Dict[str, Any]:
-        """Maneja búsquedas web."""
-        self.logger.info("🌐 Delegando a WebAgent...")
-        
-        result = self.web_agent.search_and_answer(
-            query=user_message,
-            conversation_id=conversation_id
-        )
+        result = self.source_retrieval_tool._run(conversation_id=conversation_id)
         
         return {
-            'answer': result['answer'],
-            'agent_used': 'web',
-            'confidence': 'Alta' if result['success'] else 'Baja',
-            'sources': result.get('sources', [])
-        }
-    
-    def _handle_knowledge_query(
-        self,
-        user_message: str,
-        conversation_id: Optional[int]
-    ) -> Dict[str, Any]:
-        """Maneja queries sobre documentos."""
-        self.logger.info("📚 Delegando a KnowledgeAgent...")
-        
-        result = self.knowledge_agent.answer(
-            user_message=user_message,
-            conversation_id=conversation_id
-        )
-        
-        return {
-            'answer': result['answer'],
-            'agent_used': 'knowledge',
-            'confidence': result['confidence'],
-            'sources': result.get('sources', [])
+            'answer': result,
+            'agent_used': 'source_retrieval',
+            'confidence': 'Alta',
+            'sources': []
         }
     
     def _handle_conversation(
         self,
         user_message: str,
-        conversation_id: Optional[int]
+        conversation_id: Optional[int],
+        memory_context: str
     ) -> Dict[str, Any]:
-        """
-        Maneja conversación general CON MEMORIA PERSISTENTE.
-        Incluye preguntas personales sobre el usuario.
-        """
-        self.logger.info("💬 Delegando a ConversationalAgent (con memoria)...")
+        """Maneja conversación general con mem0."""
+        self.logger.info("💬 Conversational Agent con mem0...")
         
-        response = self.conversational_agent.chat(
+        # Crear Task
+        task = Task(
+            description=f"""Responde al usuario de forma natural y personalizada.
+
+Contexto de memoria:
+{memory_context if memory_context else "No hay contexto previo relevante"}
+
+Mensaje del usuario: {user_message}
+
+IMPORTANTE:
+- Usa el contexto de memoria cuando sea relevante
+- Responde de forma directa y natural
+- No menciones que tienes memoria o contexto
+- Si no sabes algo, di "No lo sé"
+""",
+            agent=self.conversational_agent,
+            expected_output="Respuesta natural y contextualizada al usuario"
+        )
+        
+        # Ejecutar con Crew
+        crew = Crew(
+            agents=[self.conversational_agent],
+            tasks=[task],
+            process=Process.sequential,
+            verbose=False
+        )
+        
+        result = crew.kickoff()
+        answer = str(result)
+        
+        # Actualizar mem0 con el intercambio
+        self.mem0.update_from_conversation(
             user_message=user_message,
+            assistant_message=answer,
             conversation_id=conversation_id
         )
         
+        # Guardar en DB
+        if self.db_manager and conversation_id:
+            self.db_manager.add_message(
+                conversation_id=conversation_id,
+                role='user',
+                content=user_message
+            )
+            self.db_manager.add_message(
+                conversation_id=conversation_id,
+                role='assistant',
+                content=answer,
+                agent_type='conversational'
+            )
+        
         return {
-            'answer': response,
+            'answer': answer,
             'agent_used': 'conversational',
             'confidence': 'Alta',
-            'sources': [],
-            'had_memory': True
+            'sources': []
         }
+    
+    def _handle_knowledge(
+        self,
+        user_message: str,
+        conversation_id: Optional[int],
+        memory_context: str
+    ) -> Dict[str, Any]:
+        """Maneja búsqueda en documentos."""
+        self.logger.info("📚 Knowledge Agent...")
+        
+        # Crear Task
+        task = Task(
+            description=f"""Busca información en los documentos indexados.
+
+Contexto de memoria (usa si es relevante):
+{memory_context if memory_context else "Sin contexto previo"}
+
+Pregunta: {user_message}
+
+IMPORTANTE:
+- Busca SOLO en documentos usando la tool
+- Cita las fuentes
+- Si no encuentras información, dilo claramente
+""",
+            agent=self.knowledge_agent,
+            expected_output="Respuesta basada en documentos con citas"
+        )
+        
+        # Ejecutar
+        crew = Crew(
+            agents=[self.knowledge_agent],
+            tasks=[task],
+            process=Process.sequential,
+            verbose=False
+        )
+        
+        result = crew.kickoff()
+        answer = str(result)
+        
+        # Guardar en DB
+        if self.db_manager and conversation_id:
+            self.db_manager.add_message(
+                conversation_id=conversation_id,
+                role='user',
+                content=user_message
+            )
+            self.db_manager.add_message(
+                conversation_id=conversation_id,
+                role='assistant',
+                content=answer,
+                agent_type='knowledge'
+            )
+        
+        return {
+            'answer': answer,
+            'agent_used': 'knowledge',
+            'confidence': 'Alta',
+            'sources': []
+        }
+    
+    def _handle_web_search(
+        self,
+        user_message: str,
+        conversation_id: Optional[int],
+        memory_context: str
+    ) -> Dict[str, Any]:
+        """Maneja búsqueda web."""
+        self.logger.info("🌐 Web Agent...")
+        
+        # Búsqueda web (custom, no via CrewAI tool por limitaciones)
+        try:
+            from src.tools.web_search import WebSearchTool
+            from src.tools.date_normalizer import DateNormalizer
+            
+            date_normalizer = DateNormalizer()
+            normalized_query = date_normalizer.normalize(user_message)
+            
+            web_tool = WebSearchTool(api_key=settings.SERPER_API_KEY)
+            search_results = web_tool.search(normalized_query, num_results=5)
+            
+            if not search_results:
+                return {
+                    'answer': "No encontré resultados en la web.",
+                    'agent_used': 'web',
+                    'confidence': 'Baja',
+                    'sources': []
+                }
+            
+            # Crear Task para sintetizar
+            task = Task(
+                description=f"""Sintetiza información de búsqueda web.
+
+Resultados:
+{search_results}
+
+Pregunta original: {user_message}
+
+IMPORTANTE:
+- Sintetiza la información más relevante
+- No inventes datos
+- Sé conciso
+""",
+                agent=self.web_agent,
+                expected_output="Síntesis de resultados web"
+            )
+            
+            crew = Crew(
+                agents=[self.web_agent],
+                tasks=[task],
+                process=Process.sequential,
+                verbose=False
+            )
+            
+            result = crew.kickoff()
+            answer = str(result)
+            
+            # Extraer fuentes
+            sources = []
+            for res in search_results.get('organic', [])[:3]:
+                sources.append({
+                    'title': res.get('title', ''),
+                    'url': res.get('link', ''),
+                    'snippet': res.get('snippet', '')
+                })
+            
+            # Guardar en DB
+            if self.db_manager and conversation_id:
+                self.db_manager.add_message(
+                    conversation_id=conversation_id,
+                    role='user',
+                    content=user_message
+                )
+                self.db_manager.add_message(
+                    conversation_id=conversation_id,
+                    role='assistant',
+                    content=answer,
+                    agent_type='web',
+                    metadata={'sources': sources}
+                )
+            
+            return {
+                'answer': answer,
+                'agent_used': 'web',
+                'confidence': 'Alta',
+                'sources': sources
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error en web search: {e}")
+            return {
+                'answer': f"Error en búsqueda web: {str(e)}",
+                'agent_used': 'web',
+                'confidence': 'Baja',
+                'sources': []
+            }

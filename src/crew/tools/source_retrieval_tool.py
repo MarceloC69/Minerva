@@ -1,79 +1,69 @@
-# src/crew/tools/source_retrieval_tool.py - v1.0.1
-"""
-Tool para recuperar fuentes de respuestas anteriores.
-"""
+# ============================================================
+# src/crew/tools/source_retrieval_tool.py
+# ============================================================
+"""Tool de CrewAI para recuperar fuentes web de mensajes previos."""
 
-from typing import Any, Optional
-from crewai_tools import BaseTool
-import json
+from crewai.tools import BaseTool
+from typing import Type, Any
+from pydantic import BaseModel, Field
+
+
+class SourceRetrievalInput(BaseModel):
+    """Input para recuperación de fuentes."""
+    conversation_id: int = Field(..., description="ID de la conversación actual")
 
 
 class SourceRetrievalTool(BaseTool):
     """
-    Tool para recuperar fuentes del último mensaje con sources.
+    Tool para recuperar fuentes web del último mensaje.
+    
+    Uso: Cuando el usuario pregunte "¿de dónde sacaste eso?" o
+    solicite las fuentes de información.
     """
     
-    name: str = "source_retrieval"
-    description: str = (
-        "Recupera las fuentes (URLs) del último mensaje que las usó. "
-        "Útil cuando el usuario pregunta '¿de dónde sacaste eso?'. "
-        "No requiere input."
-    )
+    name: str = "retrieve_sources"
+    description: str = """Recupera las fuentes web del último mensaje.
+    Usa esta herramienta cuando el usuario pregunte por:
+    - Fuentes de información
+    - Links o URLs usados
+    - De dónde salió la información
     
-    # IMPORTANTE: Declarar db_manager como atributo
-    db_manager: Any = None
+    Input: conversation_id (int)
+    Output: Lista de fuentes con títulos y URLs
+    """
+    args_schema: Type[BaseModel] = SourceRetrievalInput
     
-    def __init__(self, db_manager, **kwargs):
-        """
-        Inicializa el tool.
-        
-        Args:
-            db_manager: DatabaseManager
-        """
+    def __init__(self, db_manager: Any, **kwargs):
         super().__init__(**kwargs)
-        self.db_manager = db_manager
+        # Usar atributo privado
+        object.__setattr__(self, '_db_manager', db_manager)
     
-    def _run(self, conversation_id: Optional[int] = None) -> str:
-        """
-        Recupera las fuentes.
-        
-        Args:
-            conversation_id: ID de conversación (opcional)
-            
-        Returns:
-            Fuentes formateadas o mensaje de no encontradas
-        """
+    def _run(self, conversation_id: int) -> str:
+        """Recupera las fuentes del último mensaje."""
         try:
-            # Obtener última conversación si no se especifica
-            if conversation_id is None:
-                conversations = self.db_manager.get_active_conversations(limit=1)
-                if not conversations:
-                    return "No hay conversaciones activas"
-                conversation_id = conversations[0].id
-            
-            # Obtener mensajes recientes
-            messages = self.db_manager.get_conversation_messages(
+            messages = self._db_manager.get_messages(
                 conversation_id=conversation_id,
-                limit=20
+                limit=10
             )
             
-            # Buscar último mensaje con sources
-            for message in reversed(messages):
-                if message.role == 'assistant' and message.extra_metadata:
-                    metadata = message.extra_metadata
-                    
-                    if isinstance(metadata, dict) and 'sources' in metadata:
+            for msg in reversed(messages):
+                if msg['role'] == 'assistant' and msg.get('metadata'):
+                    metadata = msg['metadata']
+                    if 'sources' in metadata:
                         sources = metadata['sources']
                         
-                        if sources:
-                            # Formatear fuentes
-                            result = "Fuentes encontradas:\n\n"
-                            for i, source in enumerate(sources, 1):
-                                result += f"{i}. {source.get('title', 'Sin título')}\n"
-                                result += f"   {source.get('url', 'Sin URL')}\n\n"
-                            return result
+                        if not sources:
+                            return "No hay fuentes web en la última respuesta."
+                        
+                        result = "🔗 Fuentes utilizadas:\n\n"
+                        for i, source in enumerate(sources, 1):
+                            title = source.get('title', 'Sin título')
+                            url = source.get('url', 'Sin URL')
+                            result += f"{i}. **{title}**\n   {url}\n\n"
+                        
+                        return result
             
-            return "No se encontraron fuentes en mensajes recientes"
+            return "No encontré fuentes en mensajes recientes."
             
         except Exception as e:
-            return f"Error recuperando fuentes: {e}"
+            return f"Error recuperando fuentes: {str(e)}"

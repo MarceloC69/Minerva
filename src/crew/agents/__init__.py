@@ -1,8 +1,12 @@
-# src/crew/agents/__init__.py - v1.0.0
+# ============================================================
+# src/crew/agents/__init__.py - v6.0.0
+# ============================================================
 """
-Agentes de CrewAI para Minerva.
+Agentes de CrewAI.
+NOTA: Los agentes ahora se definen dentro de MinervaCrew.
+Este directorio puede eliminarse si no se usa.
 """
 
-from .memory_agent import MemoryAgent
+# Vacío - los agentes están en minerva_crew.py
 
-__all__ = ['MemoryAgent']
+__all__ = []

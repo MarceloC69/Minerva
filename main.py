@@ -1,162 +1,104 @@
-#!/usr/bin/env python3
+# main.py - v6.0.0 - Minerva con CrewAI + mem0
 """
-Minerva - Asistente Personal Local con RAG
-Punto de entrada principal para la aplicación.
+Punto de entrada principal de Minerva.
+Inicializa todos los componentes y lanza la UI de Gradio.
 """
 
-import sys
-import os
+import logging
 from pathlib import Path
 
-# Agregar el directorio raíz al path
-ROOT_DIR = Path(__file__).parent
-sys.path.insert(0, str(ROOT_DIR))
-
-import gradio as gr
-from src.ui.chat_interface import create_interface as create_chat_interface
-from src.ui.prompt_admin import create_prompt_admin_interface
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 def main():
-    """Función principal que lanza la aplicación."""
-    print("🚀 Iniciando Minerva...")
-    print("📍 Verificando componentes...")
+    """Inicializa Minerva y lanza la UI."""
     
-    # Verificar que Ollama está corriendo
+    logger.info("=" * 70)
+    logger.info("🧠 MINERVA v6.0.0 - Con CrewAI + mem0")
+    logger.info("=" * 70)
+    
     try:
-        import requests
-        response = requests.get("http://localhost:11434/api/tags", timeout=2)
-        if response.status_code == 200:
-            print("✅ Ollama conectado")
-        else:
-            print("⚠️  Ollama respondió pero con error")
-    except Exception as e:
-        print("❌ Error: Ollama no está corriendo")
-        print("   Por favor ejecuta: ollama serve")
-        return
-    
-    # Verificar directorios
-    data_dir = ROOT_DIR / "data"
-    data_dir.mkdir(exist_ok=True)
-    (data_dir / "qdrant_storage").mkdir(exist_ok=True)
-    (data_dir / "sqlite").mkdir(exist_ok=True)
-    (data_dir / "uploads").mkdir(exist_ok=True)
-    print("✅ Directorios verificados")
-    
-    # Crear interfaces
-    print("✅ Creando interfaz de chat...")
-    chat_interface = create_chat_interface()
-    
-    print("✅ Creando interfaz de administración...")
-    admin_interface = create_prompt_admin_interface()
-    
-    print("✅ Creando placeholder de documentos...")
-    # Crear interfaz de documentos (placeholder)
-    with gr.Blocks() as docs_interface:
-        gr.Markdown(
-            """
-            ## 📁 Gestión de Documentos
-            
-            Esta sección estará disponible en la siguiente fase.
-            
-            **Características planeadas:**
-            - 📤 Subir documentos (PDF, TXT, DOCX, MD)
-            - 📊 Ver estadísticas de indexación
-            - 🗑️ Eliminar documentos
-            - 🔄 Re-indexar colección
-            - 📈 Métricas de uso
-            
-            ---
-            
-            *Por ahora, puedes gestionar prompts en la pestaña de Administración.*
-            """
+        # Importar configuración
+        from config.settings import settings
+        logger.info(f"✅ Configuración cargada desde {settings.SQLITE_PATH}")
+        
+        # Importar componentes
+        from src.database import DatabaseManager
+        from src.embeddings import EmbeddingService
+        from src.memory.vector_store import VectorMemory
+        from src.processing.indexer import DocumentIndexer
+        from src.tools.web_search import WebSearchTool
+        from src.crew.minerva_crew import MinervaCrew
+        
+        # 1. Database Manager
+        logger.info("1/6 Inicializando Database Manager...")
+        db_manager = DatabaseManager(db_path=settings.SQLITE_PATH)
+        
+        # 2. Embedding Service
+        logger.info("2/6 Inicializando Embedding Service...")
+        embedding_service = EmbeddingService(
+            model_name=settings.EMBEDDING_MODEL
         )
+        
+        # 3. Vector Memory (para documentos, no para mem0)
+        logger.info("3/6 Inicializando Vector Memory...")
+        vector_memory = VectorMemory(
+            path=str(settings.QDRANT_STORAGE_PATH),
+            collection_name="knowledge_base",  # Para documentos
+            vector_size=settings.EMBEDDING_DIM
+        )
+        
+        # 4. Document Indexer
+        logger.info("4/6 Inicializando Document Indexer...")
+        indexer = DocumentIndexer(
+            vector_memory=vector_memory,
+            db_manager=db_manager,
+            embedding_service=embedding_service,
+            chunk_size=settings.CHUNK_SIZE,
+            chunk_overlap=settings.CHUNK_OVERLAP
+        )
+        
+        # 5. Web Search Service
+        logger.info("5/6 Inicializando Web Search...")
+        web_search = WebSearchTool(api_key=settings.SERPER_API_KEY)
+        
+        # 6. MinervaCrew (con CrewAI + mem0)
+        logger.info("6/6 Inicializando MinervaCrew (CrewAI + mem0)...")
+        crew = MinervaCrew(
+            db_manager=db_manager,
+            indexer=indexer,
+            web_search_service=web_search
+        )
+        
+        logger.info("=" * 70)
+        logger.info("✅ Todos los componentes inicializados correctamente")
+        logger.info("=" * 70)
+        
+        # Lanzar UI
+        logger.info("🚀 Lanzando interfaz Gradio...")
+        from src.ui.chat_interface import create_interface
+        
+        interface = create_interface()
+        
+        interface.launch(
+            server_name="0.0.0.0",
+            server_port=7860,
+            share=False,
+            show_error=True
+        )
+        
+    except KeyboardInterrupt:
+        logger.info("\n👋 Minerva detenido por el usuario")
     
-    # Combinar interfaces usando TabbedInterface
-    print("✅ Integrando componentes...")
-    app = gr.TabbedInterface(
-        interface_list=[chat_interface, admin_interface, docs_interface],
-        tab_names=["💬 Chat", "⚙️ Administración", "📁 Documentos"],
-        title="🧠 Minerva - Asistente Personal Local",
-        theme=gr.themes.Soft(
-            primary_hue="blue",
-            secondary_hue="slate",
-            neutral_hue="slate",
-            font=["Inter", "sans-serif"]
-        ),
-        css="""
-        /* Container principal con scroll si es necesario */
-        .gradio-container {
-            max-width: 1400px !important;
-            height: 100vh !important;
-            overflow-y: auto !important;
-            overflow-x: hidden !important;
-        }
-        
-        /* Tabs más compactos */
-        .tab-nav button {
-            font-size: 1em !important;
-            padding: 10px 20px !important;
-        }
-        
-        /* Scroll personalizado para el container principal */
-        .gradio-container::-webkit-scrollbar {
-            width: 10px;
-        }
-        .gradio-container::-webkit-scrollbar-track {
-            background: #f1f1f1;
-        }
-        .gradio-container::-webkit-scrollbar-thumb {
-            background: #888;
-            border-radius: 5px;
-        }
-        .gradio-container::-webkit-scrollbar-thumb:hover {
-            background: #555;
-        }
-        
-        /* Para Firefox */
-        .gradio-container {
-            scrollbar-width: thin;
-            scrollbar-color: #888 #f1f1f1;
-        }
-        
-        /* Asegurar que el contenido no se salga horizontalmente */
-        * {
-            box-sizing: border-box;
-        }
-        """
-    )
-    
-    print("\n" + "="*60)
-    print("🎉 Minerva está listo!")
-    print("📱 Abre tu navegador en: http://localhost:7860")
-    print("")
-    print("📑 Pestañas disponibles:")
-    print("   💬 Chat - Conversa con Minerva")
-    print("   ⚙️ Administración - Gestiona prompts de agentes")
-    print("   📁 Documentos - (Próximamente)")
-    print("")
-    print("🛑 Presiona Ctrl+C para detener")
-    print("="*60 + "\n")
-    
-    # Lanzar Gradio
-    app.launch(
-        server_name="0.0.0.0",  # Permite acceso desde la red local
-        server_port=7860,
-        share=False,  # Cambiar a True para generar link público temporal
-        show_error=True,
-        quiet=False
-    )
+    except Exception as e:
+        logger.error(f"❌ Error fatal: {e}", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n👋 Minerva se ha detenido. ¡Hasta luego!")
-        sys.exit(0)
-    except Exception as e:
-        print(f"\n❌ Error fatal: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    main()

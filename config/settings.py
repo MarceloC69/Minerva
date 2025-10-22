@@ -1,6 +1,7 @@
-# config/settings.py
+# config/settings.py - v6.0.0
 """
 Configuración centralizada de Minerva usando Pydantic Settings.
+Incluye configuración para CrewAI + mem0.
 """
 
 from pathlib import Path
@@ -49,11 +50,13 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "phi3"
     OLLAMA_TEMPERATURE: float = 0.7
     
+    # Configuración de Web Search (Serper.dev)
+    SERPER_API_KEY: str = Field(default="")  # Se carga desde .env
+    
     # Límites y configuraciones
     MAX_SEARCH_RESULTS: int = 5
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
-
     KNOWLEDGE_THRESHOLD: float = 0.4
 
     def __init__(self, **kwargs):
@@ -77,9 +80,10 @@ class Settings(BaseSettings):
     @property
     def EXPORTS_DIR(self) -> Path:
         """Directorio para exportaciones."""
-        exports_dir = Path("data/exports")
+        exports_dir = self.DATA_DIR / "exports"
         exports_dir.mkdir(parents=True, exist_ok=True)
         return exports_dir
+
 
 # Instancia global de configuración
 settings = Settings()

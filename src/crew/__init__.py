@@ -1,9 +1,12 @@
-# src/crew/__init__.py - v1.0.0
+# ============================================================
+# src/crew/__init__.py - v6.0.0
+# ============================================================
 """
-Módulo CrewAI de Minerva.
-Sistema multi-agente con memoria persistente.
+Módulo del crew de Minerva (CrewAI).
 """
 
 from .minerva_crew import MinervaCrew
 
-__all__ = ['MinervaCrew']
+__all__ = [
+    'MinervaCrew'
+]
