@@ -1,3 +1,4 @@
+# config/settings.py
 """
 Configuración centralizada de Minerva usando Pydantic Settings.
 """
@@ -73,6 +74,12 @@ class Settings(BaseSettings):
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def EXPORTS_DIR(self) -> Path:
+        """Directorio para exportaciones."""
+        exports_dir = Path("data/exports")
+        exports_dir.mkdir(parents=True, exist_ok=True)
+        return exports_dir
 
 # Instancia global de configuración
 settings = Settings()

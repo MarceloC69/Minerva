@@ -1,64 +1,60 @@
-# src/ui/chat_interface.py - Interfaz de chat con Gradio
+# src/ui/chat_interface.py - v5.0.0 - Con gestión de hechos
 """
-Interfaz de chat para Minerva usando Gradio.
-Proporciona una UI amigable para interactuar con el asistente.
+Interfaz de chat de Minerva con memoria persistente REAL.
+Incluye tab para ver y gestionar hechos almacenados.
 """
 
 import gradio as gr
-from datetime import datetime
-from typing import List, Tuple
 import logging
+from datetime import datetime
+from typing import Tuple
 
-from src.router.intelligent_router import IntelligentRouter
-from config.settings import settings
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s:%(name)s:%(message)s'
+)
+logger = logging.getLogger("src.ui.chat_interface")
 
-# Configurar logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Inicializar router global
-router = None
-# Conversation ID para la sesión actual
+# Variable global para el crew
+crew = None
 current_conversation_id = None
 
-
-def initialize_router():
-    """Inicializa el router de manera lazy (solo cuando se necesita)."""
-    global router
-    if router is None:
-        logger.info("Inicializando router inteligente...")
+def initialize_crew():
+    """Inicializa MinervaCrew con memoria LangChain + Hechos."""
+    global crew
+    
+    if crew is None:
+        logger.info("🚀 Inicializando MinervaCrew con MEMORIA PERSISTENTE...")
         
-        # Importar todos los componentes necesarios
         from src.embeddings import EmbeddingService
         from src.memory import VectorMemory
         from src.database import DatabaseManager
         from src.processing.indexer import DocumentIndexer
         from src.agents.conversational import ConversationalAgent
         from src.agents.knowledge import KnowledgeAgent
+        from src.agents.web import WebAgent
         from config.settings import settings
         
-        # === ORDEN CORRECTO DE INICIALIZACIÓN ===
-        
-        # 1. Embedding Service (necesita model_name)
-        logger.info("1/7 Inicializando Embedding Service...")
+        # 1. Embedding Service
+        logger.info("1/7 Embedding Service...")
         embedding_service = EmbeddingService(
             model_name=settings.EMBEDDING_MODEL
         )
         
-        # 2. Vector Memory / Qdrant (necesita path, collection_name, vector_size)
-        logger.info("2/7 Inicializando Vector Memory (Qdrant)...")
+        # 2. Vector Memory (Qdrant)
+        logger.info("2/7 Vector Memory...")
         vector_memory = VectorMemory(
             path=str(settings.QDRANT_STORAGE_PATH),
             collection_name=settings.QDRANT_COLLECTION_NAME,
             vector_size=settings.EMBEDDING_DIM
         )
         
-        # 3. Database Manager / SQLite (necesita db_path)
-        logger.info("3/7 Inicializando Database Manager...")
+        # 3. Database Manager
+        logger.info("3/7 Database Manager...")
         db_manager = DatabaseManager(db_path=settings.SQLITE_PATH)
         
-        # 4. Document Indexer (necesita vector_memory, db_manager, embedding_service)
-        logger.info("4/7 Inicializando Document Indexer...")
+        # 4. Document Indexer
+        logger.info("4/7 Document Indexer...")
         indexer = DocumentIndexer(
             vector_memory=vector_memory,
             db_manager=db_manager,
@@ -67,441 +63,642 @@ def initialize_router():
             chunk_overlap=settings.CHUNK_OVERLAP
         )
         
-        # 5. Conversational Agent (todos opcionales, pero pasamos db_manager)
-        logger.info("5/7 Inicializando Conversational Agent...")
+        # 5. Conversational Agent CON MEMORIA
+        logger.info("5/7 Conversational Agent (LangChain + Hechos)...")
         conversational_agent = ConversationalAgent(
+            model_name=settings.OLLAMA_MODEL,
+            temperature=settings.OLLAMA_TEMPERATURE,
+            db_manager=db_manager,
+            embedding_service=embedding_service,
+            vector_memory=vector_memory,
+            extraction_interval=1
+        )
+        
+        # 6. Knowledge Agent
+        logger.info("6/7 Knowledge Agent...")
+        knowledge_agent = KnowledgeAgent(
+            model_name=settings.OLLAMA_MODEL,
+            temperature=settings.OLLAMA_TEMPERATURE,
+            db_manager=db_manager,
+            indexer=indexer
+        )
+        
+        # 7. Web Agent
+        logger.info("7/7 Web Agent...")
+        web_agent = WebAgent(
             model_name=settings.OLLAMA_MODEL,
             temperature=settings.OLLAMA_TEMPERATURE,
             db_manager=db_manager
         )
         
-        # 6. Knowledge Agent (necesita db_manager e indexer)
-        logger.info("6/7 Inicializando Knowledge Agent...")
-        knowledge_agent = KnowledgeAgent(
-            model_name=settings.OLLAMA_MODEL,
-            temperature=0.3,  # Más preciso para conocimiento
-            db_manager=db_manager,
-            indexer=indexer
-        )
-        
-        # 7. Router (necesita conversational_agent, knowledge_agent, indexer)
-        logger.info("7/7 Inicializando Router...")
-        router = IntelligentRouter(
+        # 8. MinervaCrew
+        logger.info("Creando MinervaCrew...")
+        from src.crew import MinervaCrew
+        crew = MinervaCrew(
             conversational_agent=conversational_agent,
             knowledge_agent=knowledge_agent,
+            web_agent=web_agent,
+            db_manager=db_manager,
             indexer=indexer,
-            knowledge_threshold=settings.KNOWLEDGE_THRESHOLD
+            memory_service=None
         )
         
-        logger.info("✅ Router y todos los componentes inicializados correctamente")
+        logger.info("✅ MinervaCrew con memoria persistente listo")
+    
+    return crew
+
+
+def get_loaded_prompts_info():
+    """Obtiene información de los prompts cargados."""
+    global crew
+    
+    try:
+        if crew is None:
+            return "ℹ️ Iniciando..."
         
-        # Crear conversación inicial automáticamente
-        if current_conversation_id is None:
-            try:
-                from datetime import datetime
-                conv = router.conversational_agent.db_manager.create_conversation(
-                    title=f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                    metadata={'source': 'gradio_ui', 'auto_created': True}
-                )
-                globals()['current_conversation_id'] = conv.id
-                logger.info(f"✅ Conversación inicial creada: ID={conv.id}")
-            except Exception as e:
-                logger.error(f"Error creando conversación inicial: {e}")
-    
-    return router
-
-
-def format_response_with_metadata(response: str, metadata: dict) -> str:
-    """
-    Formatea la respuesta con metadata visual.
-    
-    Args:
-        response: Respuesta del agente
-        metadata: Diccionario con información adicional
-    
-    Returns:
-        String formateado con markdown
-    """
-    formatted = response + "\n\n---\n\n"
-    
-    # Información del agente
-    agent_type = metadata.get('agent_type', 'unknown')
-    agent_emoji = {
-        'conversational': '💬',
-        'knowledge': '📚',
-        'web': '🌐'
-    }
-    
-    formatted += f"{agent_emoji.get(agent_type, '🤖')} **Agente**: {agent_type.title()}\n\n"
-    
-    # Nivel de confianza
-    confidence = metadata.get('confidence_level')
-    if confidence:
-        confidence_emoji = {
-            'Alta': '🟢',
-            'Media': '🟡',
-            'Baja': '🔴'
-        }
-        formatted += f"{confidence_emoji.get(confidence, '⚪')} **Confianza**: {confidence}\n\n"
-    
-    # Fuentes
-    sources = metadata.get('sources', [])
-    if sources:
-        formatted += "📎 **Fuentes**:\n"
-        for i, source in enumerate(sources[:3], 1):  # Máximo 3 fuentes
-            formatted += f"{i}. {source}\n"
-        formatted += "\n"
-    
-    return formatted
-
-
-def export_conversation(history: List[Tuple[str, str]]) -> str:
-    """
-    Exporta la conversación a formato texto.
-    
-    Args:
-        history: Historial de la conversación
-    
-    Returns:
-        String con la conversación formateada
-    """
-    if not history:
-        return "No hay conversación para exportar."
-    
-    lines = ["=" * 60, "CONVERSACIÓN CON MINERVA", "=" * 60, ""]
-    
-    for i, (user_msg, bot_msg) in enumerate(history, 1):
-        lines.append(f"[Mensaje #{i}]")
-        lines.append(f"Usuario: {user_msg}")
+        from src.database.prompt_manager import PromptManager
         
-        # Limpiar el mensaje del bot (quitar metadata visible)
-        clean_bot_msg = bot_msg.split("---")[0].strip()  # Solo la respuesta, sin metadata
-        lines.append(f"\nMinerva: {clean_bot_msg}")
-        lines.append("\n" + "-" * 60 + "\n")
-    
-    return "\n".join(lines)
+        pm = PromptManager(crew.db_manager)
+        
+        info = ""
+        
+        # Conversational
+        try:
+            hist = pm.get_prompt_history('conversational', 'system_prompt', limit=1)
+            if hist:
+                info += f"**conversational/**\n"
+                info += f"system_prompt v{hist[0].version}\n\n"
+        except:
+            pass
+        
+        # Fact Extractor
+        try:
+            hist = pm.get_prompt_history('fact_extractor', 'extraction_prompt', limit=1)
+            if hist:
+                info += f"**fact_extractor/**\n"
+                info += f"extraction_prompt v{hist[0].version}\n\n"
+        except:
+            pass
+        
+        # Router
+        try:
+            hist = pm.get_prompt_history('router', 'classification_prompt', limit=1)
+            if hist:
+                info += f"**router/**\n"
+                info += f"classification_prompt v{hist[0].version}\n\n"
+        except:
+            pass
+        
+        return info if info else "ℹ️ Sin prompts"
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo prompts: {e}")
+        return "⚠️ Error"
 
 
 def initialize_conversation():
-    """Inicializa una nueva conversación en la base de datos."""
-    global current_conversation_id
+    """Crea nueva conversación."""
+    global current_conversation_id, crew
     
     try:
-        current_router = initialize_router()
+        crew = initialize_crew()
         
-        # Crear nueva conversación en la DB
-        from datetime import datetime
-        conv = current_router.conversational_agent.db_manager.create_conversation(
-            title=f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            metadata={'source': 'gradio_ui'}
+        previous_conversation_id = current_conversation_id
+        
+        conv = crew.db_manager.create_conversation(
+            title=f"Conversación {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         )
         current_conversation_id = conv.id
         
-        logger.info(f"✅ Nueva conversación creada: ID={current_conversation_id}")
-        return current_conversation_id
+        logger.info(f"✅ Nueva conversación: ID {current_conversation_id}")
         
+        if previous_conversation_id:
+            logger.info(f"📋 Conversación anterior: ID {previous_conversation_id}")
+        
+        return []
+    
     except Exception as e:
         logger.error(f"❌ Error creando conversación: {e}")
         import traceback
         traceback.print_exc()
-        return None
+        return []
 
 
-def chat_function(message: str, history: List[Tuple[str, str]]) -> Tuple[List[Tuple[str, str]], str]:
-    """
-    Función principal del chat que procesa mensajes.
-    
-    Args:
-        message: Mensaje del usuario
-        history: Historial de la conversación
-    
-    Returns:
-        Tupla de (nuevo_historial, string_vacío)
-    """
-    if not message or not message.strip():
-        return history, ""
+def chat_function(message: str, history):
+    """Procesa mensaje con memoria persistente."""
+    global current_conversation_id, crew
     
     try:
-        # Inicializar router si no existe
-        current_router = initialize_router()
+        logger.info(f"Usuario: {message}")
         
-        # Asegurarse de que existe una conversación
-        global current_conversation_id
+        crew = initialize_crew()
+        
         if current_conversation_id is None:
             initialize_conversation()
         
-        # Procesar mensaje con conversation_id
-        logger.info(f"Usuario: {message}")
-        response_data = current_router.route(
+        response_data = crew.route(
             user_message=message,
             conversation_id=current_conversation_id
         )
         
-        # Debug: ver qué retorna el router
-        logger.info(f"Router retornó: {type(response_data)}")
-        logger.info(f"Keys en response: {response_data.keys() if isinstance(response_data, dict) else 'No es dict'}")
+        answer = response_data.get('answer', 'Lo siento, no pude generar una respuesta.')
+        agent_used = response_data.get('agent_used', 'unknown')
+        confidence = response_data.get('confidence', 'Media')
         
-        # Extraer respuesta y metadata de forma robusta
-        if isinstance(response_data, dict):
-            # El router retorna 'answer', no 'response'
-            response_text = (
-                response_data.get('answer') or 
-                response_data.get('response') or 
-                response_data.get('output', 'Lo siento, no pude generar una respuesta.')
-            )
-            
-            # Construir metadata
-            metadata = {
-                'agent_type': response_data.get('agent_used', 'unknown'),
-                'confidence_level': response_data.get('confidence', ''),
-                'sources': response_data.get('sources', []),
-                'search_score': response_data.get('search_score', 0)
-            }
-        else:
-            # Si no es un dict, intentar usar como string directo
-            response_text = str(response_data)
-            metadata = {'agent_type': 'unknown'}
+        agent_icons = {
+            'conversational': '💬',
+            'knowledge': '📚',
+            'web': '🌐',
+            'memory': '🧠'
+        }
         
-        # Formatear respuesta
-        formatted_response = format_response_with_metadata(response_text, metadata)
+        icon = agent_icons.get(agent_used, '🤖')
+        response_with_meta = f"{answer}\n\n---\n*{icon} {agent_used.title()} • Confianza: {confidence}*"
         
-        # Agregar al historial
-        history.append((message, formatted_response))
-        
-        logger.info(f"Minerva ({metadata.get('agent_type', 'unknown')}): Respuesta enviada")
-        
-        return history, ""
-        
+        return response_with_meta
+    
     except Exception as e:
-        logger.error(f"Error en chat: {e}", exc_info=True)
-        error_msg = f"❌ **Error**: Lo siento, ocurrió un error al procesar tu mensaje.\n\n```\n{str(e)}\n```"
-        history.append((message, error_msg))
-        return history, ""
+        logger.error(f"❌ Error en chat: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"❌ Error: {str(e)}"
 
 
-def clear_chat() -> Tuple[List, str]:
-    """Limpia el historial del chat y crea nueva conversación."""
-    global current_conversation_id
+def export_conversation():
+    """Exporta la conversación actual."""
+    global current_conversation_id, crew
     
-    # Crear nueva conversación
-    initialize_conversation()
+    if current_conversation_id is None:
+        return "No hay conversación activa."
     
-    logger.info("Chat limpiado y nueva conversación creada")
-    return [], ""
-
-
-def get_system_info() -> str:
-    """Obtiene información del sistema."""
     try:
-        current_router = initialize_router()
+        if crew is None:
+            crew = initialize_crew()
         
-        # Obtener estadísticas
-        stats = {
-            'model': settings.OLLAMA_MODEL,
-            'embedding_model': settings.EMBEDDING_MODEL,
-            'collection': settings.QDRANT_COLLECTION_NAME,
-            'temperature': settings.OLLAMA_TEMPERATURE,
-            'threshold': settings.KNOWLEDGE_THRESHOLD
-        }
+        from src.memory.langchain_memory import LangChainMemoryWrapper
+        from config.settings import settings
         
-        info = "## ⚙️ Configuración Actual\n\n"
-        info += f"**Modelo LLM**: {stats['model']}\n\n"
-        info += f"**Modelo Embeddings**: {stats['embedding_model']}\n\n"
-        info += f"**Colección**: {stats['collection']}\n\n"
-        info += f"**Temperatura**: {stats['temperature']}\n\n"
-        info += f"**Umbral de conocimiento**: {stats['threshold']}\n\n"
-        
-        return info
-    except Exception as e:
-        return f"❌ Error al obtener información: {e}"
-
-
-def create_interface() -> gr.Blocks:
-    """
-    Crea y configura la interfaz de Gradio.
-    
-    Returns:
-        Objeto gr.Blocks configurado
-    """
-    
-    # Tema personalizado
-    theme = gr.themes.Soft(
-        primary_hue="blue",
-        secondary_hue="slate",
-        neutral_hue="slate",
-        font=["Inter", "sans-serif"]
-    )
-    
-    # Crear interfaz
-    with gr.Blocks(
-        theme=theme,
-        title="Minerva - Asistente Personal Local",
-        css="""
-        .gradio-container {
-            max-width: 1200px !important;
-        }
-        .chat-message {
-            padding: 10px;
-            border-radius: 8px;
-        }
-        """
-    ) as interface:
-        
-        # Header
-        gr.Markdown(
-            """
-            # 🧠 Minerva
-            ### Tu Asistente Personal Local con RAG
-            
-            ---
-            """
+        langchain_mem = LangChainMemoryWrapper(
+            db_path=str(settings.SQLITE_PATH),
+            conversation_id=current_conversation_id
         )
         
-        # Layout principal
-        with gr.Row():
-            # Columna principal - Chat
-            with gr.Column(scale=3):
-                chatbot = gr.Chatbot(
-                    label="Conversación",
-                    height=500,
-                    show_label=True,
-                    bubble_full_width=False
-                    # avatar_images removido temporalmente por compatibilidad
-                )
-                
-                with gr.Row():
-                    msg_input = gr.Textbox(
-                        label="Tu mensaje",
-                        placeholder="Escribe tu mensaje aquí... (Shift+Enter para enviar)",
-                        lines=2,
-                        scale=4,
-                        show_label=False
-                    )
-                    send_btn = gr.Button("📤 Enviar", scale=1, variant="primary")
-                
-                with gr.Row():
-                    clear_btn = gr.Button("🗑️ Limpiar chat", size="sm")
-                    export_btn = gr.Button("📋 Copiar conversación", size="sm", variant="secondary")
-                
-                # Área de texto oculta para la conversación exportada
-                exported_text = gr.Textbox(
-                    label="Conversación exportada (selecciona todo y copia)",
-                    lines=10,
-                    max_lines=20,
-                    visible=False,
-                    interactive=True
-                )
-                    
+        messages = langchain_mem.get_messages()
+        
+        if not messages:
+            return "La conversación está vacía."
+        
+        export_text = f"=== Conversación Minerva ===\n"
+        export_text += f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        export_text += f"ID: {current_conversation_id}\n"
+        export_text += "=" * 50 + "\n\n"
+        
+        for msg in messages:
+            if hasattr(msg, 'type'):
+                role = "Usuario" if msg.type == "human" else "Minerva"
+            else:
+                role = "Usuario" if msg.__class__.__name__ == "HumanMessage" else "Minerva"
             
-            # Columna lateral - Info y controles
-            with gr.Column(scale=1):
-                gr.Markdown("## 📊 Panel de Control")
+            export_text += f"{role}: {msg.content}\n\n"
+        
+        return export_text
+    
+    except Exception as e:
+        logger.error(f"❌ Error exportando: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"Error: {str(e)}"
+
+
+# ==================== GESTIÓN DE HECHOS ====================
+
+def load_all_facts() -> str:
+    """Carga todos los hechos almacenados en formato HTML."""
+    try:
+        from src.embeddings import EmbeddingService
+        from src.memory.vector_store import VectorMemory
+        from config.settings import settings
+        
+        embedding_service = EmbeddingService(model_name=settings.EMBEDDING_MODEL)
+        vector_memory = VectorMemory(
+            path=str(settings.QDRANT_STORAGE_PATH),
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            vector_size=settings.EMBEDDING_DIM
+        )
+        
+        # Obtener todos los puntos
+        scroll_result = vector_memory.client.scroll(
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            limit=100,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        points = scroll_result[0]
+        
+        # Filtrar solo hechos
+        facts = []
+        for point in points:
+            payload = point.payload or {}
+            if payload.get('type') == 'fact':
+                text = payload.get('text', '')
+                # Limpiar prefijos de categoría
+                for prefix in ['[personal] ', '[professional] ', '[personal_age] ', '[hobby] ']:
+                    text = text.replace(prefix, '')
                 
-                # Botón de info del sistema
-                info_btn = gr.Button("⚙️ Ver Configuración", size="sm")
-                system_info = gr.Markdown("", visible=False)
+                facts.append({
+                    'id': str(point.id),
+                    'text': text,
+                    'category': payload.get('category', 'unknown'),
+                    'created_at': payload.get('created_at', 'N/A')
+                })
+        
+        if not facts:
+            return "<p style='color: #666; text-align: center; padding: 20px;'>📭 No hay hechos almacenados</p>"
+        
+        # HTML con cards de hechos
+        html = f"""
+        <style>
+            .facts-container {{
+                max-width: 100%;
+                margin: 10px 0;
+            }}
+            .facts-header {{
+                background: #f8f9fa;
+                padding: 10px 15px;
+                border-radius: 8px;
+                margin-bottom: 15px;
+                font-weight: 600;
+            }}
+            .fact-card {{
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                padding: 15px;
+                margin: 10px 0;
+                background: white;
+                transition: all 0.2s;
+            }}
+            .fact-card:hover {{
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            }}
+            .fact-header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 8px;
+            }}
+            .fact-number {{
+                font-weight: 600;
+                color: #666;
+                font-size: 0.9em;
+            }}
+            .fact-category {{
+                display: inline-block;
+                padding: 3px 8px;
+                border-radius: 4px;
+                font-size: 0.85em;
+                background: #e9ecef;
+                color: #495057;
+            }}
+            .fact-text {{
+                font-size: 1.1em;
+                margin: 10px 0;
+                line-height: 1.5;
+            }}
+            .fact-meta {{
+                font-size: 0.85em;
+                color: #6c757d;
+                margin-top: 8px;
+            }}
+        </style>
+        <div class='facts-container'>
+            <div class='facts-header'>
+                📊 Total de hechos almacenados: {len(facts)}
+            </div>
+        """
+        
+        for i, fact in enumerate(facts, 1):
+            html += f"""
+            <div class='fact-card'>
+                <div class='fact-header'>
+                    <span class='fact-number'>#{i}</span>
+                    <span class='fact-category'>{fact['category']}</span>
+                </div>
+                <div class='fact-text'>{fact['text']}</div>
+                <div class='fact-meta'>
+                    📅 Creado: {fact['created_at'][:19] if len(fact['created_at']) > 19 else fact['created_at']}
+                </div>
+            </div>
+            """
+        
+        html += "</div>"
+        return html
+        
+    except Exception as e:
+        logger.error(f"Error cargando hechos: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"<p style='color: red;'>❌ Error: {str(e)}</p>"
+
+
+def get_fact_ids_list() -> list:
+    """Obtiene lista de IDs de hechos para el dropdown."""
+    try:
+        from src.memory.vector_store import VectorMemory
+        from config.settings import settings
+        
+        vector_memory = VectorMemory(
+            path=str(settings.QDRANT_STORAGE_PATH),
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            vector_size=settings.EMBEDDING_DIM
+        )
+        
+        scroll_result = vector_memory.client.scroll(
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            limit=100,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        fact_options = []
+        for point in scroll_result[0]:
+            payload = point.payload or {}
+            if payload.get('type') == 'fact':
+                text = payload.get('text', '')
+                for prefix in ['[personal] ', '[professional] ', '[personal_age] ']:
+                    text = text.replace(prefix, '')
+                # Limitar texto a 80 caracteres
+                display_text = text[:80] + "..." if len(text) > 80 else text
+                fact_options.append((display_text, str(point.id)))
+        
+        return fact_options if fact_options else [("No hay hechos", "")]
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo IDs: {e}")
+        return [("Error cargando", "")]
+
+
+def delete_fact(fact_id: str) -> Tuple[str, str]:
+    """Elimina un hecho por su ID."""
+    try:
+        if not fact_id:
+            return "⚠️ Selecciona un hecho para eliminar", load_all_facts()
+        
+        from src.memory.vector_store import VectorMemory
+        from config.settings import settings
+        
+        vector_memory = VectorMemory(
+            path=str(settings.QDRANT_STORAGE_PATH),
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            vector_size=settings.EMBEDDING_DIM
+        )
+        
+        # Eliminar el punto
+        vector_memory.client.delete(
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            points_selector=[fact_id]
+        )
+        
+        return "✅ Hecho eliminado correctamente", load_all_facts()
+        
+    except Exception as e:
+        logger.error(f"Error eliminando hecho: {e}")
+        return f"❌ Error: {str(e)}", load_all_facts()
+
+
+def clear_all_facts() -> Tuple[str, str]:
+    """Elimina TODOS los hechos (PELIGROSO)."""
+    try:
+        from src.memory.vector_store import VectorMemory
+        from config.settings import settings
+        
+        vector_memory = VectorMemory(
+            path=str(settings.QDRANT_STORAGE_PATH),
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            vector_size=settings.EMBEDDING_DIM
+        )
+        
+        # Obtener todos los IDs de hechos
+        scroll_result = vector_memory.client.scroll(
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            limit=1000,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        fact_ids = []
+        for point in scroll_result[0]:
+            payload = point.payload or {}
+            if payload.get('type') == 'fact':
+                fact_ids.append(str(point.id))
+        
+        if fact_ids:
+            vector_memory.client.delete(
+                collection_name=settings.QDRANT_COLLECTION_NAME,
+                points_selector=fact_ids
+            )
+            
+            return f"✅ Se eliminaron {len(fact_ids)} hechos", load_all_facts()
+        else:
+            return "⚠️ No había hechos para eliminar", load_all_facts()
+        
+    except Exception as e:
+        logger.error(f"Error limpiando hechos: {e}")
+        return f"❌ Error: {str(e)}", load_all_facts()
+
+
+def create_interface():
+    """Crea interfaz Gradio con tab de hechos."""
+    
+    with gr.Blocks(title="Minerva Chat", theme=gr.themes.Soft()) as interface:
+        
+        gr.Markdown("# 🧠 Minerva - Asistente con Memoria Persistente")
+        
+        with gr.Tabs():
+            
+            # ============= TAB 1: CHAT =============
+            with gr.Tab("💬 Chat"):
+                with gr.Row():
+                    with gr.Column(scale=4):
+                        chatbot = gr.Chatbot(
+                            height=400,
+                            show_label=False,
+                            avatar_images=(None, "🧠")
+                        )
+                        
+                        with gr.Row():
+                            msg_input = gr.Textbox(
+                                placeholder="Escribe tu mensaje aquí...",
+                                show_label=False,
+                                scale=4
+                            )
+                            submit_btn = gr.Button("Enviar", variant="primary", scale=1)
+                        
+                        with gr.Row():
+                            clear_btn = gr.Button("🗑️ Nueva Conversación", size="sm")
+                            export_btn = gr.Button("💾 Exportar", size="sm")
+                    
+                    with gr.Column(scale=1):
+                        gr.Markdown("### ℹ️ Sistema")
+                        
+                        prompts_info = gr.Markdown(
+                            value="ℹ️ Iniciando...",
+                            label="Prompts"
+                        )
+                        
+                        refresh_prompts_btn = gr.Button("🔄 Actualizar", size="sm")
+                        
+                        gr.Markdown("\n**Modelo:** Phi3\n**Memoria:** Activa")
+                        
+                        export_output = gr.Textbox(
+                            label="Exportar",
+                            lines=10,
+                            visible=False
+                        )
+                
+                # Event handlers
+                def user_message(message, history):
+                    return "", history + [[message, None]]
+                
+                def bot_response(history):
+                    if not history or history[-1][1] is not None:
+                        return history, get_loaded_prompts_info()
+                    
+                    user_msg = history[-1][0]
+                    bot_msg = chat_function(user_msg, history[:-1])
+                    history[-1][1] = bot_msg
+                    
+                    return history, get_loaded_prompts_info()
+                
+                msg_input.submit(
+                    user_message,
+                    [msg_input, chatbot],
+                    [msg_input, chatbot],
+                    queue=False
+                ).then(
+                    bot_response,
+                    chatbot,
+                    [chatbot, prompts_info]
+                )
+                
+                submit_btn.click(
+                    user_message,
+                    [msg_input, chatbot],
+                    [msg_input, chatbot],
+                    queue=False
+                ).then(
+                    bot_response,
+                    chatbot,
+                    [chatbot, prompts_info]
+                )
+                
+                clear_btn.click(
+                    initialize_conversation,
+                    None,
+                    chatbot,
+                    queue=False
+                ).then(
+                    lambda: get_loaded_prompts_info(),
+                    None,
+                    prompts_info
+                )
+                
+                refresh_prompts_btn.click(
+                    get_loaded_prompts_info,
+                    None,
+                    prompts_info
+                )
+                
+                def show_export():
+                    text = export_conversation()
+                    return gr.update(visible=True, value=text)
+                
+                export_btn.click(
+                    show_export,
+                    None,
+                    export_output
+                )
+            
+            # ============= TAB 2: HECHOS =============
+            with gr.Tab("🧠 Hechos Almacenados"):
+                
+                gr.Markdown("""
+                ### Gestión de Hechos
+                
+                Aquí puedes ver todos los hechos que Minerva ha aprendido sobre ti.
+                Los hechos se extraen automáticamente de las conversaciones.
+                """)
+                
+                with gr.Row():
+                    refresh_facts_btn = gr.Button("🔄 Recargar Hechos", variant="primary", scale=1)
+                    clear_all_btn = gr.Button("🗑️ Eliminar TODOS los Hechos", variant="stop", scale=1)
+                
+                facts_result = gr.Markdown("")
+                
+                facts_display = gr.HTML(
+                    value=load_all_facts(),
+                    label="Hechos"
+                )
                 
                 gr.Markdown("---")
+                gr.Markdown("### Eliminar Hecho Individual")
                 
-                # Información de uso
-                gr.Markdown(
-                    """
-                    ### 💡 Consejos
-                    
-                    **Conversación casual:**
-                    - "Hola, ¿cómo estás?"
-                    - "Cuéntame un chiste"
-                    
-                    **Consultas sobre documentos:**
-                    - "¿Qué dice el documento sobre...?"
-                    - "Resume el contenido de..."
-                    
-                    **Estado:**
-                    - 🟢 Sistema funcionando
-                    - 💬 Agente conversacional
-                    - 📚 Agente de conocimiento
-                    - 💾 Conversación persistente
-                    
-                    ---
-                    
-                    ### 🔒 Privacidad
-                    Todo se procesa localmente.
-                    Sin internet. Sin tracking.
-                    """
+                with gr.Row():
+                    fact_selector = gr.Dropdown(
+                        choices=[],
+                        label="Selecciona un hecho para eliminar",
+                        scale=3
+                    )
+                    delete_fact_btn = gr.Button("🗑️ Eliminar", variant="stop", scale=1)
+                
+                delete_result = gr.Markdown("")
+                
+                # Eventos
+                def refresh_facts_and_dropdown():
+                    facts_html = load_all_facts()
+                    fact_options = get_fact_ids_list()
+                    return facts_html, gr.Dropdown(choices=fact_options)
+                
+                refresh_facts_btn.click(
+                    refresh_facts_and_dropdown,
+                    None,
+                    [facts_display, fact_selector]
+                )
+                
+                delete_fact_btn.click(
+                    delete_fact,
+                    inputs=fact_selector,
+                    outputs=[delete_result, facts_display]
+                ).then(
+                    refresh_facts_and_dropdown,
+                    None,
+                    [facts_display, fact_selector]
+                )
+                
+                clear_all_btn.click(
+                    clear_all_facts,
+                    None,
+                    [facts_result, facts_display]
+                ).then(
+                    refresh_facts_and_dropdown,
+                    None,
+                    [facts_display, fact_selector]
+                )
+                
+                # Cargar dropdown inicial
+                interface.load(
+                    get_fact_ids_list,
+                    None,
+                    fact_selector
                 )
         
-        # Footer
         gr.Markdown(
             """
             ---
             <div style='text-align: center; color: #666; font-size: 0.9em;'>
-                Minerva v1.0 | Fase 5 | Powered by Ollama + Phi-3 + Qdrant
+                🧠 <strong>Minerva</strong> - Tu asistente con memoria persistente real
             </div>
             """
         )
-        
-        # Event handlers
-        
-        # Crear conversación al cargar la interfaz
-        def init_on_load():
-            initialize_conversation()
-            return None
-        
-        interface.load(
-            fn=init_on_load,
-            inputs=None,
-            outputs=None
-        )
-        
-        # Enviar mensaje con botón
-        send_btn.click(
-            fn=chat_function,
-            inputs=[msg_input, chatbot],
-            outputs=[chatbot, msg_input],
-            api_name="chat"
-        )
-        
-        # Enviar mensaje con Enter
-        msg_input.submit(
-            fn=chat_function,
-            inputs=[msg_input, chatbot],
-            outputs=[chatbot, msg_input]
-        )
-        
-        # Limpiar chat
-        clear_btn.click(
-            fn=clear_chat,
-            inputs=None,
-            outputs=[chatbot, msg_input]
-        )
-        
-        # Exportar conversación
-        def show_export(history):
-            text = export_conversation(history)
-            return gr.Textbox(value=text, visible=True)
-        
-        export_btn.click(
-            fn=show_export,
-            inputs=chatbot,
-            outputs=exported_text
-        )
-        
-        # Mostrar info del sistema
-        def toggle_info():
-            info = get_system_info()
-            return gr.Markdown(value=info, visible=True)
-        
-        info_btn.click(
-            fn=toggle_info,
-            inputs=None,
-            outputs=system_info
-        )
     
     return interface
-
-
-# Para testing directo
-if __name__ == "__main__":
-    print("Lanzando interfaz de prueba...")
-    interface = create_interface()
-    interface.launch(server_port=7860, share=False)

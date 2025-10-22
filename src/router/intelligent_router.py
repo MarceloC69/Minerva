@@ -1,298 +1,225 @@
+# src/router/intelligent_router.py - v2.2.0
 """
-Router Inteligente de Minerva.
-Decide qué agente usar según la consulta del usuario.
+Router inteligente que decide qué agente usar según la consulta del usuario.
+Ahora con WebAgent usando Crawl4AI (mucho más robusto).
 """
 
 from typing import Dict, Any, Optional
 import logging
+import re
 
-from src.agents import ConversationalAgent, KnowledgeAgent
-from src.processing import DocumentIndexer
+from src.agents.conversational import ConversationalAgent
+from src.agents.knowledge import KnowledgeAgent
+from src.agents.web import WebAgent
 
 
 class IntelligentRouter:
     """
-    Router que decide qué agente invocar según la consulta.
+    Router que analiza queries y decide qué agente usar.
     
-    Proceso:
-    1. Analiza la consulta del usuario
-    2. Busca PROACTIVAMENTE en Qdrant (siempre)
-    3. Decide qué agente usar según relevancia del contexto
-    4. Invoca el agente apropiado
+    Agentes disponibles:
+    - Conversational: Chat general, preguntas personales
+    - Knowledge: Consultas sobre documentos indexados
+    - Web: Búsqueda de información actualizada (con Crawl4AI)
     """
     
     def __init__(
         self,
         conversational_agent: ConversationalAgent,
         knowledge_agent: KnowledgeAgent,
-        indexer: DocumentIndexer,
-        knowledge_threshold: float = 0.4
+        indexer,
+        knowledge_threshold: float = 0.5,
+        web_agent: Optional[WebAgent] = None
     ):
         """
-        Inicializa el router.
+        Inicializa el router con los agentes disponibles.
         
         Args:
             conversational_agent: Agente conversacional
-            knowledge_agent: Agente de conocimiento
-            indexer: Indexador de documentos
-            knowledge_threshold: Umbral para usar agente de conocimiento
+            knowledge_agent: Agente de conocimiento/RAG
+            indexer: Indexer de documentos
+            knowledge_threshold: Umbral para usar knowledge agent
+            web_agent: Agente web (se crea si no se proporciona)
         """
         self.conversational_agent = conversational_agent
         self.knowledge_agent = knowledge_agent
+        self.web_agent = web_agent or WebAgent(
+            model_name="phi3:latest",  # Cambiado de phi3:mini
+            temperature=0.3,
+            db_manager=conversational_agent.db_manager
+        )
         self.indexer = indexer
-        self.knowledge_threshold = knowledge_threshold
-        
+        self.threshold = knowledge_threshold
         self.logger = logging.getLogger("minerva.router")
-        self.logger.info("Router Inteligente inicializado")
-    
-    def _check_knowledge_base(
-        self,
-        query: str,
-        collection_name: str = "knowledge_base"
-    ) -> Dict[str, Any]:
-        """
-        Busca proactivamente en la base de conocimiento.
         
-        Args:
-            query: Consulta del usuario
-            collection_name: Colección donde buscar
-            
-        Returns:
-            Dict con resultados y decisión
-        """
-        try:
-            results = self.indexer.search_documents(
-                query=query,
-                collection_name=collection_name,
-                limit=3,
-                score_threshold=0.3
-            )
-            
-            if not results:
-                return {
-                    'has_knowledge': False,
-                    'results': [],
-                    'max_score': 0.0,
-                    'decision': 'conversational'
-                }
-            
-            max_score = max(r['score'] for r in results)
-            
-            # Decidir según score
-            if max_score >= self.knowledge_threshold:
-                decision = 'knowledge'
-            else:
-                decision = 'conversational'
-            
-            return {
-                'has_knowledge': True,
-                'results': results,
-                'max_score': max_score,
-                'decision': decision,
-                'num_results': len(results)
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error buscando en knowledge base: {e}")
-            return {
-                'has_knowledge': False,
-                'results': [],
-                'max_score': 0.0,
-                'decision': 'conversational'
-            }
+        # Web habilitado con Crawl4AI
+        self.web_enabled = True
+        self.logger.info("✅ WebAgent habilitado con Crawl4AI")
     
-    def _detect_query_patterns(self, query: str) -> Dict[str, Any]:
+    def _needs_web_search(self, query: str) -> bool:
         """
-        Detecta patrones en la consulta para ayudar a la decisión.
+        Detecta si una query necesita búsqueda web.
         
         Args:
             query: Consulta del usuario
             
         Returns:
-            Dict con patrones detectados
+            True si necesita búsqueda web
         """
         query_lower = query.lower()
         
-        # Patrones que sugieren búsqueda de conocimiento
-        knowledge_keywords = [
-            'qué es', 'cómo funciona', 'explica', 'cuál es',
-            'dime sobre', 'información sobre', 'características de',
-            'tecnologías', 'arquitectura', 'documentación'
+        # Palabras clave temporales
+        time_keywords = [
+            'hoy', 'ahora', 'actual', 'últimas', 'reciente',
+            'este año', '2025', 'esta semana'
         ]
         
-        # Patrones conversacionales
-        conversational_keywords = [
-            'hola', 'buenos días', 'gracias', 'ayuda',
-            'puedes', 'podrías', 'me gustaría'
+        # Temas actualizables
+        current_topics = [
+            'clima', 'weather', 'temperatura', 'pronóstico',
+            'precio', 'cotización', 'dólar',
+            'noticia', 'news', 'novedades'
         ]
         
-        has_knowledge_pattern = any(kw in query_lower for kw in knowledge_keywords)
-        has_conversational_pattern = any(kw in query_lower for kw in conversational_keywords)
+        # Verificar keywords
+        if any(keyword in query_lower for keyword in time_keywords):
+            return True
         
-        # Detectar preguntas (termina con ?)
-        is_question = query.strip().endswith('?')
+        if any(topic in query_lower for topic in current_topics):
+            return True
         
-        return {
-            'has_knowledge_pattern': has_knowledge_pattern,
-            'has_conversational_pattern': has_conversational_pattern,
-            'is_question': is_question,
-            'length': len(query)
-        }
+        return False
+    
+    def _is_news_query(self, query: str) -> bool:
+        """Detecta si es query de noticias."""
+        query_lower = query.lower()
+        news_keywords = ['noticia', 'news', 'últimas', 'novedades']
+        return any(keyword in query_lower for keyword in news_keywords)
     
     def route(
         self,
         user_message: str,
-        conversation_id: Optional[int] = None,
-        collection_name: str = "knowledge_base",
-        force_agent: Optional[str] = None
+        conversation_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Procesa una consulta y decide qué agente usar.
+        Rutea el mensaje al agente apropiado.
         
-        Args:
-            user_message: Mensaje del usuario
-            conversation_id: ID de conversación (opcional)
-            collection_name: Colección de documentos
-            force_agent: Forzar un agente específico ('conversational' o 'knowledge')
-            
-        Returns:
-            Dict con respuesta y metadata
+        Lógica:
+        1. ¿Necesita info actualizada? → WebAgent
+        2. ¿Hay documentos relevantes? → KnowledgeAgent
+        3. Sino → ConversationalAgent
         """
-        self.logger.info(f"Routing consulta: '{user_message[:50]}...'")
+        self.logger.info(f"🎯 Router recibió: '{user_message[:50]}...'")
         
         try:
-            # Si se fuerza un agente específico
-            if force_agent:
-                self.logger.info(f"Agente forzado: {force_agent}")
+            # 1. Verificar si necesita web
+            if self.web_enabled and self._needs_web_search(user_message):
+                self.logger.info("🌐 Decisión: WebAgent (info actualizada)")
                 
-                if force_agent == 'knowledge':
-                    result = self.knowledge_agent.answer(
-                        user_message=user_message,
-                        conversation_id=conversation_id,
-                        collection_name=collection_name
-                    )
-                    return {
-                        'answer': result['answer'],
-                        'agent_used': 'knowledge',
-                        'confidence': result['confidence'],
-                        'sources': result['sources'],
-                        'routing_reason': 'forced'
-                    }
-                else:
-                    answer = self.conversational_agent.chat(
-                        user_message=user_message,
-                        conversation_id=conversation_id
-                    )
-                    return {
-                        'answer': answer,
-                        'agent_used': 'conversational',
-                        'routing_reason': 'forced'
-                    }
-            
-            # 1. Buscar proactivamente en knowledge base
-            kb_check = self._check_knowledge_base(user_message, collection_name)
-            
-            # 2. Detectar patrones en la consulta
-            patterns = self._detect_query_patterns(user_message)
-            
-            # 3. Decidir agente
-            # Prioridad 1: Knowledge base con score alto
-            if kb_check['has_knowledge'] and kb_check['max_score'] >= self.knowledge_threshold:
-                decision = 'knowledge'
-                reason = f"Knowledge base match (score: {kb_check['max_score']:.2f})"
-            
-            # Prioridad 2: Patrones + algún resultado en KB
-            elif patterns['has_knowledge_pattern'] and kb_check['has_knowledge']:
-                decision = 'knowledge'
-                reason = f"Knowledge pattern + results (score: {kb_check['max_score']:.2f})"
-            
-            # Prioridad 3: Conversacional por defecto
-            else:
-                decision = 'conversational'
-                if kb_check['has_knowledge']:
-                    reason = f"Low relevance (score: {kb_check['max_score']:.2f}), using conversational"
-                else:
-                    reason = "No knowledge base results, using conversational"
-            
-            self.logger.info(f"Decisión: {decision} - {reason}")
-            
-            # 4. Invocar agente seleccionado
-            if decision == 'knowledge':
-                result = self.knowledge_agent.answer(
-                    user_message=user_message,
-                    conversation_id=conversation_id,
-                    collection_name=collection_name
+                search_type = "news" if self._is_news_query(user_message) else "general"
+                
+                result = self.web_agent.search_and_answer(
+                    query=user_message,
+                    search_type=search_type,
+                    conversation_id=conversation_id
                 )
                 
                 return {
                     'answer': result['answer'],
-                    'agent_used': 'knowledge',
-                    'confidence': result['confidence'],
+                    'agent_used': 'web',
+                    'confidence': 'Alta',
                     'sources': result.get('sources', []),
-                    'num_sources': result.get('num_sources', 0),
-                    'routing_reason': reason,
-                    'kb_max_score': kb_check['max_score']
+                    'search_type': search_type
                 }
             
-            else:  # conversational
-                # Si hay contexto relevante aunque no usemos knowledge agent,
-                # podemos pasárselo al conversational
-                context = None
-                if kb_check['has_knowledge'] and kb_check['max_score'] > 0.3:
-                    context = self.indexer.get_document_context(
-                        query=user_message,
-                        collection_name=collection_name,
-                        max_chunks=1
-                    )
+            # 2. Verificar documentos
+            has_documents = self.indexer.has_documents()
+            
+            if has_documents:
+                # Buscar documentos relevantes
+                search_results = self.indexer.search(user_message, top_k=3)
                 
-                answer = self.conversational_agent.chat(
-                    user_message=user_message,
-                    context=context,
-                    conversation_id=conversation_id
-                )
-                
-                return {
-                    'answer': answer,
-                    'agent_used': 'conversational',
-                    'routing_reason': reason,
-                    'had_context': context is not None,
-                    'kb_max_score': kb_check.get('max_score', 0.0)
-                }
+                if search_results and len(search_results) > 0:
+                    best_score = search_results[0]['score']
+                    
+                    if best_score >= self.threshold:
+                        self.logger.info(
+                            f"📚 Decisión: KnowledgeAgent (score={best_score:.3f})"
+                        )
+                        
+                        response = self.knowledge_agent.answer_with_context(
+                            question=user_message,
+                            conversation_id=conversation_id
+                        )
+                        
+                        return {
+                            'answer': response['answer'],
+                            'agent_used': 'knowledge',
+                            'confidence': response.get('confidence', 'Media'),
+                            'sources': response.get('sources', []),
+                            'search_score': best_score
+                        }
+                    else:
+                        self.logger.info(
+                            f"⚠️ Documentos pero score bajo ({best_score:.3f})"
+                        )
+            
+            # 3. Conversational por defecto
+            self.logger.info("💬 Decisión: ConversationalAgent")
+            
+            response = self.conversational_agent.chat(
+                user_message=user_message,
+                conversation_id=conversation_id
+            )
+            
+            return {
+                'answer': response,
+                'agent_used': 'conversational',
+                'confidence': 'Alta',
+                'sources': []
+            }
             
         except Exception as e:
-            self.logger.error(f"Error en routing: {e}", exc_info=True)
+            self.logger.error(f"❌ Error en routing: {e}", exc_info=True)
             
-            # Fallback: usar conversational
+            # Fallback al agente conversacional
             try:
-                answer = self.conversational_agent.chat(
+                response = self.conversational_agent.chat(
                     user_message=user_message,
                     conversation_id=conversation_id
                 )
-                
                 return {
-                    'answer': answer,
+                    'answer': response,
                     'agent_used': 'conversational',
-                    'routing_reason': f'error_fallback: {str(e)}',
+                    'confidence': 'Media',
+                    'sources': [],
                     'error': str(e)
                 }
-                
-            except Exception as fallback_error:
+            except Exception as e2:
                 return {
-                    'answer': "Lo siento, hubo un error procesando tu mensaje.",
-                    'agent_used': 'none',
-                    'routing_reason': 'critical_error',
-                    'error': str(fallback_error)
+                    'answer': f"Lo siento, ocurrió un error al procesar tu mensaje: {str(e2)}",
+                    'agent_used': 'error',
+                    'confidence': 'Baja',
+                    'sources': [],
+                    'error': str(e2)
                 }
     
     def get_stats(self) -> Dict[str, Any]:
         """
-        Obtiene estadísticas de los agentes.
+        Obtiene estadísticas del router.
         
         Returns:
-            Dict con estadísticas
+            Diccionario con estadísticas
         """
         return {
-            'conversational_agent': self.conversational_agent.get_stats(),
-            'knowledge_agent': self.knowledge_agent.get_stats(),
-            'threshold': self.knowledge_threshold
+            'agents_available': ['conversational', 'knowledge', 'web'],
+            'has_documents': self.indexer.has_documents(),
+            'knowledge_threshold': self.threshold,
+            'web_agent_enabled': True  # Habilitado con Crawl4AI
         }
+
+
+# Para testing directo
+if __name__ == "__main__":
+    print("Router v2.1.0 - Web temporalmente deshabilitado")
+    print("Agentes activos: Conversational + Knowledge (RAG)")

@@ -1,3 +1,4 @@
+# src/agents/knowledge.py
 """
 Agente de conocimiento de Minerva.
 Responde preguntas usando documentos indexados (RAG).
@@ -242,16 +243,18 @@ Minerva (basándome en los documentos):"""
             if not answer:
                 raise AgentExecutionError("Ollama no devolvió respuesta")
             
-            # 7. Preparar fuentes
-            sources = [
-                {
-                    'filename': r['payload']['filename'],
-                    'chunk_index': r['payload']['chunk_index'],
-                    'score': r['score'],
-                    'text_preview': r['payload']['text'][:150] + "..."
+            # 7. Preparar fuentes - FIX: Manejar diferentes estructuras de payload
+            sources = []
+            for r in results:
+                payload = r.get('payload', {})
+                
+                source_info = {
+                    'filename': payload.get('filename') or payload.get('source') or payload.get('document_name') or 'Desconocido',
+                    'chunk_index': payload.get('chunk_index', 0),
+                    'score': r.get('score', 0.0),
+                    'text_preview': payload.get('text', '')[:150] + "..." if payload.get('text') else "Sin preview"
                 }
-                for r in results
-            ]
+                sources.append(source_info)
             
             # 8. Calcular duración
             duration_ms = int((time.time() - start_time) * 1000)

@@ -1,101 +1,118 @@
+# tests/test_memory.py
+"""
+Script para probar la memoria persistente de Minerva.
+"""
+
 import sys
 from pathlib import Path
 
-# Agregar el directorio raíz al PYTHONPATH
-root_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(root_dir))
+# Agregar raíz del proyecto al path (estamos en tests/)
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.embeddings.embedder import EmbeddingService
-from src.memory.vector_store import VectorMemory
-from config.settings import Settings
+from src.memory.memory_service import get_memory_service
+from src.database import DatabaseManager
+from config.settings import settings
 
-def test_memory_system():
-    """Test del sistema de memoria con embeddings y vector store"""
+
+def test_memory():
+    """Prueba básica de memoria persistente."""
+    
+    print("🧠 Probando Memoria Persistente de Minerva")
     print("=" * 60)
-    print("🧪 TEST: Sistema de Memoria")
-    print("=" * 60)
     
-    # Setup
-    print("\n1. Inicializando configuración...")
-    settings = Settings()
+    # Inicializar componentes
+    print("\n1. Inicializando componentes...")
+    db_manager = DatabaseManager(db_path=settings.SQLITE_PATH)
+    memory_service = get_memory_service(db_manager=db_manager)
+    print("✅ Componentes inicializados")
     
-    print("\n2. Inicializando servicio de embeddings...")
-    embedder = EmbeddingService(settings.EMBEDDING_MODEL)
+    # Test 1: Agregar información
+    print("\n2. Agregando información a la memoria...")
+    test_facts = [
+        "El usuario se llama Marcelo",
+        "Marcelo es desarrollador Python",
+        "A Marcelo le gusta la ciencia ficción",
+        "Marcelo vive en Guernica, Buenos Aires, Argentina"
+    ]
     
-    print("\n3. Inicializando almacenamiento vectorial...")
-    memory = VectorMemory(
-        path=settings.QDRANT_PATH,
-        collection_name="test_collection",
-        vector_size=settings.EMBEDDING_DIMENSIONS
+    for fact in test_facts:
+        result = memory_service.add_memory(
+            text=fact,
+            user_id="default_user",
+            metadata={'test': True}
+        )
+        if result['success']:
+            print(f"   ✅ Memorizado: {fact}")
+        else:
+            print(f"   ❌ Error: {result.get('error')}")
+    
+    # Test 2: Buscar información
+    print("\n3. Buscando información relevante...")
+    queries = [
+        "¿Cómo se llama el usuario?",
+        "¿Qué le gusta al usuario?",
+        "¿Dónde vive?",
+        "¿Cuál es su profesión?"
+    ]
+    
+    for query in queries:
+        print(f"\n   Query: {query}")
+        results = memory_service.search_memory(
+            query=query,
+            user_id="default_user",
+            limit=2
+        )
+        
+        if results:
+            for i, mem in enumerate(results, 1):
+                if isinstance(mem, dict):
+                    memory_text = mem.get('memory', mem.get('text', str(mem)))
+                else:
+                    memory_text = str(mem)
+                print(f"      {i}. {memory_text}")
+        else:
+            print("      (No se encontró información)")
+    
+    # Test 3: Obtener todas las memorias
+    print("\n4. Obteniendo todas las memorias...")
+    all_memories = memory_service.get_all_memories(user_id="default_user")
+    print(f"   Total de memorias: {len(all_memories)}")
+    
+    if all_memories:
+        print("\n   Memorias almacenadas:")
+        for i, mem in enumerate(all_memories, 1):
+            if isinstance(mem, dict):
+                memory_text = mem.get('memory', mem.get('text', str(mem)))
+            else:
+                memory_text = str(mem)
+            print(f"      {i}. {memory_text}")
+    
+    # Test 4: Contexto para LLM
+    print("\n5. Generando contexto para LLM...")
+    context = memory_service.get_memory_context(
+        query="Háblame del usuario",
+        user_id="default_user",
+        limit=3
     )
     
-    # Test 1: Guardar
-    print("\n" + "=" * 60)
-    print("TEST 1: Guardando textos con embeddings")
-    print("=" * 60)
-    
-    texts = [
-        "Python es un lenguaje de programación",
-        "Me gusta programar en Python",
-        "El clima está soleado hoy"
-    ]
-    
-    print(f"\nTextos a guardar:")
-    for i, text in enumerate(texts, 1):
-        print(f"  {i}. {text}")
-    
-    print("\nGenerando embeddings...")
-    embeddings = embedder.embed_texts(texts)
-    print(f"✓ Generados {len(embeddings)} embeddings de dimensión {len(embeddings[0])}")
-    
-    metadata = [
-        {"source": "doc1", "confidence": "high"},
-        {"source": "doc2", "confidence": "high"},
-        {"source": "doc3", "confidence": "low"}
-    ]
-    
-    print("\nGuardando en Qdrant...")
-    ids = memory.add_texts(texts, embeddings, metadata)
-    print(f"✓ Guardados {len(ids)} textos con IDs:")
-    for id_ in ids:
-        print(f"  - {id_}")
-    
-    # Test 2: Buscar
-    print("\n" + "=" * 60)
-    print("TEST 2: Búsqueda semántica")
-    print("=" * 60)
-    
-    query = "lenguajes de programación"
-    print(f"\nConsulta: '{query}'")
-    
-    print("Generando embedding de consulta...")
-    query_emb = embedder.embed_single(query)
-    
-    print("Buscando en Qdrant...")
-    results = memory.search(query_emb, top_k=2)
-    
-    print(f"\n✓ Encontrados {len(results)} resultados:")
-    for i, result in enumerate(results, 1):
-        print(f"\n  Resultado {i}:")
-        print(f"    Score: {result['score']:.4f}")
-        print(f"    Texto: {result['text']}")
-        print(f"    Metadata: {result['metadata']}")
-    
-    # Limpieza
-    print("\n" + "=" * 60)
-    print("LIMPIEZA: Eliminando colección de test")
-    print("=" * 60)
-    memory.delete_collection()
+    if context:
+        print("   Contexto generado:")
+        print(context)
+    else:
+        print("   (No hay contexto)")
     
     print("\n" + "=" * 60)
-    print("✅ TODOS LOS TESTS PASARON CORRECTAMENTE")
-    print("=" * 60)
+    print("✅ Prueba de memoria completada")
+    print("\n💡 Tip: Ahora puedes iniciar Minerva y preguntarle:")
+    print("   - '¿Qué recuerdas de mí?'")
+    print("   - '¿Cómo me llamo?'")
+    print("   - '¿Qué sabes sobre mí?'")
+
 
 if __name__ == "__main__":
     try:
-        test_memory_system()
+        test_memory()
     except Exception as e:
-        print(f"\n❌ ERROR: {e}")
+        print(f"\n❌ Error durante la prueba: {e}")
         import traceback
         traceback.print_exc()
-        sys.exit(1)

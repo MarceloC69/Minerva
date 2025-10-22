@@ -263,7 +263,40 @@ class DocumentIndexer:
         self.logger.info(f"Contexto generado: {len(context)} chars de {len(results)} chunks")
         
         return context
-    
+    # src/processing/indexer.py - Agregar este método a la clase DocumentIndexer
+
+    def has_documents(self, collection_name: str = None) -> bool:
+        """
+        Verifica si hay documentos indexados en la colección.
+        
+        Args:
+            collection_name: Colección a verificar (usa default si no se especifica)
+            
+        Returns:
+            True si hay documentos indexados, False si no
+        """
+        # Usar colección por defecto si no se especifica
+        if collection_name is None:
+            collection_name = self.vector_memory.collection_name
+        
+        try:
+            # Opción 1: Verificar en Qdrant directamente
+            collection_info = self.vector_memory.client.get_collection(
+                collection_name=collection_name
+            )
+            has_vectors = collection_info.points_count > 0
+            
+            self.logger.debug(
+                f"Colección '{collection_name}': {collection_info.points_count} vectores"
+            )
+            
+            return has_vectors
+            
+        except Exception as e:
+            # Si la colección no existe o hay error, no hay documentos
+            self.logger.debug(f"Error verificando documentos: {e}")
+            return False
+
     def delete_document(
         self,
         document_id: int,

@@ -1,14 +1,16 @@
-# src/agents/conversational.py - Agente conversacional con memoria
+# src/agents/conversational.py - v5.0.0 - Con fecha actual dinámica
 """
-Agente conversacional de Minerva.
-Maneja conversaciones generales y responde preguntas usando Ollama.
+Agente conversacional de Minerva CON MEMORIA PERSISTENTE REAL.
+Usa LangChain SQLChatMessageHistory + extracción de hechos con Ollama.
+Inyecta fecha actual en cada interacción.
 """
 
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 import requests
-import json
 import time
+from datetime import datetime
+import locale
 
 from .base_agent import BaseAgent, AgentExecutionError
 from config.settings import settings
@@ -16,36 +18,40 @@ from config.settings import settings
 
 class ConversationalAgent(BaseAgent):
     """
-    Agente para conversación general.
+    Agente para conversación general CON MEMORIA PERSISTENTE REAL.
     
     Características:
-    - Conversación amigable y natural
-    - Conexión directa con Ollama (sin CrewAI overhead)
-    - Persistencia en SQLite
-    - MEMORIA de conversaciones anteriores
-    - Rápido y eficiente
+    - LangChain SQLChatMessageHistory para historial completo
+    - Extracción automática de hechos con Ollama
+    - Qdrant para almacenar hechos con embeddings
+    - Recuperación inteligente de contexto pasado
+    - Fecha actual siempre actualizada en el contexto
     """
     
     def __init__(
         self,
         model_name: str = "phi3",
-        temperature: float = 0.7,
+        temperature: float = 0.3,
         log_dir: Optional[Path] = None,
-        db_manager = None
+        db_manager = None,
+        embedding_service = None,
+        vector_memory = None,
+        extraction_interval: int = 5,
+        memory_service = None
     ):
         """
-        Inicializa el agente conversacional.
+        Inicializa el agente conversacional con memoria.
         
         Args:
-            model_name: Modelo de Ollama a usar
-            temperature: Creatividad de las respuestas (0.0-1.0)
-            log_dir: Directorio para logs
+            model_name: Modelo de Ollama
+            temperature: Creatividad (0.0-1.0)
+            log_dir: Directorio de logs
             db_manager: Gestor de base de datos
-            
-        Raises:
-            AgentExecutionError: Si no se pueden cargar los prompts
+            embedding_service: Servicio de embeddings
+            vector_memory: Almacenamiento vectorial
+            extraction_interval: Cada cuántos mensajes extraer hechos
+            memory_service: IGNORADO (compatibilidad)
         """
-        # Llamar al constructor de BaseAgent correctamente
         super().__init__(
             name="conversational_agent",
             agent_type="conversational",
@@ -57,24 +63,46 @@ class ConversationalAgent(BaseAgent):
         self.base_url = settings.OLLAMA_BASE_URL
         self.db_manager = db_manager
         
-        # Cargar prompts desde DB (OBLIGATORIO)
+        # Componentes de memoria
+        self.langchain_memory = None
+        self.fact_memory = None
+        
+        # Inicializar sistema de hechos si hay componentes
+        if embedding_service and vector_memory:
+            try:
+                from src.memory.fact_extractor import FactExtractor, FactMemoryService
+                
+                fact_extractor = FactExtractor(
+                    model_name=model_name,
+                    base_url=self.base_url,
+                    temperature=0.3,
+                    db_manager=db_manager
+                )
+                
+                self.fact_memory = FactMemoryService(
+                    fact_extractor=fact_extractor,
+                    vector_memory=vector_memory,
+                    embedding_service=embedding_service,
+                    extraction_interval=1
+                )
+                
+                self.logger.info("✅ Sistema de hechos inicializado")
+                
+            except Exception as e:
+                self.logger.error(f"❌ Error inicializando sistema de hechos: {e}")
+                self.fact_memory = None
+        else:
+            self.logger.warning("⚠️ Sin embedding_service o vector_memory, memoria de hechos deshabilitada")
+        
+        # Cargar prompts desde DB
         self._load_prompts()
         
         self.logger.info(f"LLM configurado: {model_name}")
     
     def _load_prompts(self):
-        """
-        Carga prompts desde la base de datos.
-        
-        Raises:
-            AgentExecutionError: Si no se pueden cargar los prompts
-        """
+        """Carga prompts desde la base de datos."""
         if not self.db_manager:
-            error_msg = (
-                "❌ CRITICAL: No hay db_manager disponible.\n"
-                "El agente conversacional requiere acceso a la base de datos para cargar prompts.\n"
-                "Por favor verifica la configuración del sistema."
-            )
+            error_msg = "❌ CRITICAL: No hay db_manager disponible"
             self.logger.error(error_msg)
             raise AgentExecutionError(error_msg)
         
@@ -82,129 +110,132 @@ class ConversationalAgent(BaseAgent):
             from src.database.prompt_manager import PromptManager
             prompt_manager = PromptManager(self.db_manager)
             
-            # Cargar system prompt
             self.system_prompt = prompt_manager.get_active_prompt(
                 agent_type='conversational',
                 prompt_name='system_prompt'
             )
             
-            # Cargar user instruction
-            self.user_instruction = prompt_manager.get_active_prompt(
-                agent_type='conversational',
-                prompt_name='user_instruction'
-            )
-            
-            # Validar que se cargaron correctamente
             if not self.system_prompt:
-                error_msg = (
-                    "❌ CRITICAL: No se encontró 'system_prompt' para conversational agent en la base de datos.\n"
-                    "Debes inicializar los prompts ejecutando:\n"
-                    "  python scripts/init_prompts.py --init\n"
-                    "El sistema NO puede funcionar sin prompts configurados."
-                )
+                error_msg = "❌ CRITICAL: No se encontró 'system_prompt'"
                 self.logger.error(error_msg)
                 raise AgentExecutionError(error_msg)
             
-            if not self.user_instruction:
-                error_msg = (
-                    "❌ CRITICAL: No se encontró 'user_instruction' para conversational agent en la base de datos.\n"
-                    "Debes inicializar los prompts ejecutando:\n"
-                    "  python scripts/init_prompts.py --init\n"
-                    "El sistema NO puede funcionar sin prompts configurados."
-                )
-                self.logger.error(error_msg)
-                raise AgentExecutionError(error_msg)
+            # LOG: Mostrar qué prompt se cargó
+            from src.database.prompt_manager import PromptManager
+            pm = PromptManager(self.db_manager)
+            history = pm.get_prompt_history('conversational', 'system_prompt', limit=1)
+            version_num = history[0].version if history else "?"
             
-            self.logger.info("✅ Prompts cargados correctamente desde DB")
+            self.logger.info("=" * 60)
+            self.logger.info(f"📝 PROMPT: conversational/system_prompt v{version_num}")
+            
+            if "MEMORIA Y CONTEXTO" in self.system_prompt:
+                self.logger.info("✅ Versión correcta (con MEMORIA Y CONTEXTO)")
+            else:
+                self.logger.warning("⚠️ Versión antigua (sin MEMORIA Y CONTEXTO)")
+            self.logger.info("=" * 60)
+            
+            self.logger.info("✅ Prompts cargados correctamente")
                 
         except AgentExecutionError:
-            # Re-raise para que el error sea visible
             raise
         except Exception as e:
-            error_msg = (
-                f"❌ CRITICAL: Error inesperado cargando prompts: {e}\n"
-                f"El sistema NO puede funcionar sin prompts configurados.\n"
-                f"Por favor verifica:\n"
-                f"  1. La base de datos está accesible\n"
-                f"  2. Los prompts están inicializados: python scripts/init_prompts.py --init"
-            )
+            error_msg = f"❌ CRITICAL: Error cargando prompts: {e}"
             self.logger.error(error_msg)
             raise AgentExecutionError(error_msg)
     
-    def _build_prompt_with_history(
-        self,
-        user_message: str,
-        history: List,
-        context: Optional[str] = None
-    ) -> str:
+    def _get_langchain_memory(self, conversation_id: int):
         """
-        Construye el prompt incluyendo historial de conversación.
-        Usa prompts cargados desde DB.
+        Obtiene o crea LangChain memory para esta conversación.
         
         Args:
-            user_message: Mensaje actual del usuario
-            history: Lista de mensajes anteriores (objetos Message)
-            context: Contexto adicional opcional
+            conversation_id: ID de la conversación
             
         Returns:
-            Prompt completo formateado
+            LangChainMemoryWrapper
         """
-        # Construir historial
-        history_text = ""
-        if history:
-            history_text = "\n### HISTORIAL COMPLETO DE LA CONVERSACIÓN:\n"
-            for msg in history[-10:]:  # Últimos 10 mensajes
-                role = "Usuario" if msg.role == "user" else "Minerva"
-                history_text += f"{role}: {msg.content}\n"
-            history_text += "\n"
+        from src.memory.langchain_memory import LangChainMemoryWrapper
         
-        # Construir prompt completo usando prompts de DB
-        prompt_parts = [
-            self.system_prompt,  # Cargado desde DB
-            history_text,
-        ]
-        
-        if context:
-            prompt_parts.append(f"\n### Contexto adicional:\n{context}\n")
-        
-        # Agregar mensaje del usuario con instrucción
-        prompt_parts.append(
-            f"\n### NUEVA PREGUNTA DEL USUARIO:\n{user_message}\n\n"
-            f"{self.user_instruction}\n\n"  # Cargado desde DB
-            f"Minerva:"
+        return LangChainMemoryWrapper(
+            db_path=str(settings.SQLITE_PATH),
+            conversation_id=conversation_id
         )
-        
-        return "\n".join(prompt_parts)
     
-    def _build_prompt(
+    def _get_current_date_context(self) -> str:
+        """
+        Genera el contexto de fecha actual en formato legible.
+        
+        Returns:
+            String con fecha actual formateada
+        """
+        now = datetime.now()
+        
+        # Intentar usar locale español
+        try:
+            locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
+        except:
+            try:
+                locale.setlocale(locale.LC_TIME, 'Spanish_Spain.1252')
+            except:
+                pass  # Usar default si falla
+        
+        # Nombres de días y meses en español (fallback)
+        dias = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo']
+        meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+                'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+        
+        dia_semana = dias[now.weekday()]
+        mes = meses[now.month - 1]
+        
+        fecha_context = f"""
+CONTEXTO TEMPORAL (CRÍTICO - USAR SIEMPRE):
+- Fecha actual: {dia_semana} {now.day} de {mes} de {now.year}
+- Año actual: {now.year}
+- Hora actual: {now.strftime('%H:%M')}
+
+IMPORTANTE: Esta es la fecha REAL de hoy. Úsala para cualquier cálculo temporal.
+"""
+        return fecha_context
+    
+    def _build_prompt_with_memory(
         self,
         user_message: str,
-        context: Optional[str] = None
+        history_text: str,
+        facts: List[str]
     ) -> str:
         """
-        Construye el prompt sin historial (fallback).
+        Construye prompt con historial reciente + hechos pasados + FECHA ACTUAL.
         
         Args:
-            user_message: Mensaje del usuario
-            context: Contexto adicional (opcional)
+            user_message: Mensaje actual
+            history_text: Historial formateado
+            facts: Hechos relevantes del pasado
             
         Returns:
-            Prompt formateado
+            Prompt completo
         """
-        # System prompt directo
-        system_prompt = (
-            "Eres Minerva, un asistente personal amigable y servicial. "
-            "Respondes de manera clara, concisa y natural."
-        )
+        prompt_parts = []
         
-        prompt_parts = [
-            system_prompt,
-        ]
+        # 1. SYSTEM PROMPT
+        prompt_parts.append(self.system_prompt)
         
-        if context:
-            prompt_parts.append(f"\n### Contexto adicional:\n{context}\n")
+        # 2. FECHA ACTUAL (CRÍTICO)
+        prompt_parts.append(self._get_current_date_context())
         
-        prompt_parts.append(f"\n### Usuario: {user_message}\n\n### Minerva:")
+        # 3. HECHOS del pasado (si existen)
+        if facts:
+            facts_text = "\n--- INFORMACIÓN RELEVANTE DEL PASADO ---\n"
+            facts_text += "\n".join(f"• {fact}" for fact in facts)
+            facts_text += "\n---\n"
+            prompt_parts.append(facts_text)
+            self.logger.info(f"✅ {len(facts)} hechos agregados al contexto")
+        
+        # 4. HISTORIAL reciente
+        if history_text:
+            prompt_parts.append(history_text)
+        
+        # 5. MENSAJE actual
+        prompt_parts.append(f"\nUsuario: {user_message}\n\nMinerva:")
         
         return "\n".join(prompt_parts)
     
@@ -215,58 +246,47 @@ class ConversationalAgent(BaseAgent):
         conversation_id: Optional[int] = None
     ) -> str:
         """
-        Procesa un mensaje del usuario y genera respuesta.
+        Procesa mensaje con memoria persistente completa + fecha actual.
         
         Args:
             user_message: Mensaje del usuario
-            context: Contexto adicional (opcional)
-            conversation_id: ID de conversación en DB (opcional)
+            context: Contexto adicional (ignorado)
+            conversation_id: ID de conversación
             
         Returns:
-            Respuesta generada por el agente
+            Respuesta generada
         """
         start_time = time.time()
         
         try:
-            self.logger.info(f"Procesando mensaje: {user_message[:100]}...")
+            self.logger.info(f"Procesando: {user_message[:100]}...")
             
-            # Recuperar historial si hay conversation_id
-            history = []
-            if self.db_manager and conversation_id:
-                try:
-                    # Obtener mensajes anteriores (últimos 20 para tener contexto)
-                    history = self.db_manager.get_conversation_messages(
-                        conversation_id=conversation_id,
-                        limit=20
-                    )
-                    self.logger.info(f"✅ Historial recuperado: {len(history)} mensajes")
-                    # DEBUG: Mostrar historial
-                    if history:
-                        self.logger.info("📜 Mensajes en historial:")
-                        for msg in history[-5:]:  # Últimos 5
-                            self.logger.info(f"  - {msg.role}: {msg.content[:60]}...")
-                except Exception as e:
-                    self.logger.warning(f"❌ No se pudo recuperar historial: {e}")
-                    import traceback
-                    traceback.print_exc()
-            else:
-                self.logger.info(f"⚠️ NO recuperando historial: db_manager={bool(self.db_manager)}, conv_id={conversation_id}")
+            # Validar conversation_id
+            if not conversation_id:
+                raise AgentExecutionError("conversation_id es requerido")
             
-            # Guardar mensaje del usuario en DB
-            if self.db_manager and conversation_id:
-                self.db_manager.add_message(
-                    conversation_id=conversation_id,
-                    role='user',
-                    content=user_message
+            # 1. Inicializar LangChain memory para esta conversación
+            langchain_mem = self._get_langchain_memory(conversation_id)
+            
+            # 2. Recuperar hechos relevantes (de TODAS las conversaciones pasadas)
+            facts = []
+            if self.fact_memory:
+                facts = self.fact_memory.get_relevant_facts(
+                    query=user_message,
+                    limit=5
                 )
             
-            # Construir prompt con o sin historial
-            if history:
-                prompt = self._build_prompt_with_history(user_message, history, context)
-            else:
-                prompt = self._build_prompt(user_message, context)
+            # 3. Obtener historial reciente (de esta conversación)
+            history_text = langchain_mem.get_formatted_history(limit=10)
             
-            # Llamar a Ollama API
+            # 4. Construir prompt con memoria completa + FECHA ACTUAL
+            prompt = self._build_prompt_with_memory(
+                user_message=user_message,
+                history_text=history_text,
+                facts=facts
+            )
+            
+            # 5. Generar respuesta con Ollama
             response = requests.post(
                 f"{self.base_url}/api/generate",
                 json={
@@ -280,35 +300,34 @@ class ConversationalAgent(BaseAgent):
             
             response.raise_for_status()
             result = response.json()
-            
-            # Extraer respuesta
             answer = result.get('response', '').strip()
             
             if not answer:
                 raise AgentExecutionError("El modelo no generó respuesta")
             
-            # Guardar respuesta en DB
-            if self.db_manager and conversation_id:
-                self.db_manager.add_message(
-                    conversation_id=conversation_id,
-                    role='assistant',
-                    content=answer
-                )
+            # 6. Guardar en LangChain memory
+            langchain_mem.add_user_message(user_message)
+            langchain_mem.add_ai_message(answer)
             
-            # Logging usando método de BaseAgent
+            # 7. Agregar al sistema de hechos (extrae cada N mensajes)
+            if self.fact_memory:
+                self.fact_memory.add_exchange(user_message, answer)
+            
+            # 8. Logging
             duration = time.time() - start_time
             self.log_interaction(
                 input_text=user_message,
                 output_text=answer,
                 metadata={
                     'model': self.model_name,
-                    'temperature': self.temperature,
                     'duration_seconds': duration,
-                    'had_history': len(history) > 0
+                    'used_facts': len(facts),
+                    'message_count': langchain_mem.get_message_count(),
+                    'current_date': datetime.now().isoformat()
                 }
             )
-            self.logger.info(f"Respuesta generada ({len(answer)} chars)")
             
+            self.logger.info(f"✅ Respuesta generada ({duration:.2f}s)")
             return answer
             
         except requests.RequestException as e:

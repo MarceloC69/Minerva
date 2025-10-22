@@ -1,5 +1,5 @@
 """
-Gestor de memoria vectorial usando Qdrant.
+Gestor de memoria vectorial usando Qdrant con patrón Singleton.
 """
 
 from typing import List, Dict, Any, Optional
@@ -11,13 +11,24 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 
 class VectorMemory:
     """
-    Gestor de memoria vectorial con Qdrant.
+    Gestor de memoria vectorial con Qdrant (Singleton).
     
     Funcionalidades:
     - Almacenar embeddings con metadata
     - Buscar por similitud semántica
     - Gestionar colecciones
+    - Una sola instancia de QdrantClient para evitar locks
     """
+    
+    _instance = None
+    _client = None
+    _initialized = False
+    
+    def __new__(cls, path: str = None, collection_name: str = None, vector_size: int = 384):
+        """Patrón Singleton - Solo una instancia."""
+        if cls._instance is None:
+            cls._instance = super(VectorMemory, cls).__new__(cls)
+        return cls._instance
     
     def __init__(
         self,
@@ -33,12 +44,19 @@ class VectorMemory:
             collection_name: Nombre de la colección por defecto
             vector_size: Dimensión de los vectores
         """
-        self.client = QdrantClient(path=path)
+        # Solo inicializar una vez
+        if VectorMemory._initialized:
+            return
+        
+        VectorMemory._client = QdrantClient(path=path)
+        self.client = VectorMemory._client
         self.collection_name = collection_name
         self.vector_size = vector_size
         
         # Crear colección si no existe
         self._ensure_collection()
+        
+        VectorMemory._initialized = True
     
     def _ensure_collection(self, collection_name: Optional[str] = None):
         """Asegura que la colección existe."""

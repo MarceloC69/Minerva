@@ -1,33 +1,55 @@
-# Core dependencies
-qdrant-client>=1.11.0
-fastembed>=0.2.0
-ollama>=0.5.3
-requests>=2.31.0
-httpx>=0.25.0  # Rango flexible
+# requirements.txt - v4.0.0
+# Minerva con memoria persistente LangChain + Hechos
 
-# Database
-sqlalchemy>=2.0.25
-alembic>=1.13.0
-
-# Document processing
-PyMuPDF>=1.23.0
-python-docx>=1.1.0
-python-magic>=0.4.27
-
-# Utilities
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
+# === CORE ===
 python-dotenv>=1.0.0
-loguru>=0.7.0
 
-# UI
-gradio>=4.44.0
+# === LLM / ROUTER ===
+litellm==1.74.9
+ollama>=0.1.6
 
-# DuckDuckGo search (para Fase 4)
-duckduckgo-search>=4.1.0
+# === EMBEDDINGS ===
+fastembed>=0.2.0,<0.8.0
 
-# Optional/Development (descomenta si necesitas)
-# pytest>=7.4.0
-# pytest-asyncio>=0.21.0
-# black>=23.12.0
-# flake8>=7.0.0
+# === VECTOR DATABASE ===
+qdrant-client>=1.8.0
+
+# === SQL DATABASE ===
+sqlalchemy>=2.0.0
+
+# === DOCUMENT PROCESSING ===
+pypdf>=3.17.0
+python-docx>=1.1.0
+python-pptx>=0.6.0
+openpyxl>=3.1.0
+pillow>=11.2.0,<13.0.0
+beautifulsoup4>=4.12.0
+markdown>=3.5.0
+PyMuPDF>=1.23.0
+
+# === LANGCHAIN (chunking + MEMORIA PERSISTENTE) ===
+langchain>=0.1.0,<0.4.0
+langchain-community>=0.0.20,<0.4.0
+
+# === UI ===
+gradio>=5.0.0,<6.0.0
+aiofiles>=24.1.0,<26.0.0
+
+# === WEB SEARCH ===
+crawl4ai>=0.7.0
+playwright>=1.40.0
+
+# === CREWAI ===
+crewai==0.203.1
+crewai-tools==0.17.0
+chromadb>=0.5.23
+
+# === UTILITIES ===
+requests>=2.31.0
+tqdm>=4.66.0
+pydantic>=2.5.0,<3.0.0
+pydantic-settings>=2.1.0
+
+# === TESTING ===
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
