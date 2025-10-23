@@ -59,9 +59,9 @@ class Mem0Wrapper:
                 }
             },
             "embedder": {
-                "provider": "ollama",
+                "provider": "huggingface",
                 "config": {
-                    "model": "nomic-embed-text:latest"
+                    "model": "sentence-transformers/all-MiniLM-L6-v2"
                 }
             },
             "version": "v1.1"

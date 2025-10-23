@@ -1,13 +1,25 @@
-# src/ui/chat_interface.py - v5.0.0 - Con gestión de hechos
+# src/ui/chat_interface.py - v7.3.0 COMPLETO - Fix delete_memory + mejor logging
 """
-Interfaz de chat de Minerva con memoria persistente REAL.
-Incluye tab para ver y gestionar hechos almacenados.
+Interfaz de chat de Minerva con memoria persistente (mem0).
+Versión completa con todas las funcionalidades.
+
+FIXES v7.3.0:
+- ✅ Fix función delete_memory (manejo robusto de IDs)
+- ✅ Mejor logging para debugging de mem0
+- ✅ Validación de memoria antes de eliminar
+- ✅ Manejo de errores más detallado
+- ✅ (Mantiene todos los fixes de v7.2.0)
 """
 
 import gradio as gr
 import logging
+import os
 from datetime import datetime
-from typing import Tuple
+from typing import Tuple, List
+
+# 🔧 FIX CUDA: Forzar CPU para mem0 (evitar error con GTX 1050)
+os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Deshabilita CUDA
+os.environ['TORCH_USE_CUDA_DSA'] = '0'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,46 +27,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger("src.ui.chat_interface")
 
-# Variable global para el crew
+# Variables globales
 crew = None
 current_conversation_id = None
 
+
 def initialize_crew():
-    """Inicializa MinervaCrew con memoria LangChain + Hechos."""
+    """Inicializa MinervaCrew con CrewAI + mem0 (CPU-only)."""
     global crew
     
     if crew is None:
-        logger.info("🚀 Inicializando MinervaCrew con MEMORIA PERSISTENTE...")
+        logger.info("🚀 Inicializando MinervaCrew (CrewAI + mem0 en CPU)...")
         
-        from src.embeddings import EmbeddingService
-        from src.memory import VectorMemory
         from src.database import DatabaseManager
+        from src.embeddings import EmbeddingService
+        from src.memory.vector_store import VectorMemory
+        from src.memory.mem0_wrapper import Mem0Wrapper
         from src.processing.indexer import DocumentIndexer
         from src.agents.conversational import ConversationalAgent
         from src.agents.knowledge import KnowledgeAgent
         from src.agents.web import WebAgent
+        from src.crew.minerva_crew import MinervaCrew
         from config.settings import settings
         
-        # 1. Embedding Service
-        logger.info("1/7 Embedding Service...")
+        # Componentes
+        db_manager = DatabaseManager(db_path=settings.SQLITE_PATH)
+        
         embedding_service = EmbeddingService(
             model_name=settings.EMBEDDING_MODEL
         )
         
-        # 2. Vector Memory (Qdrant)
-        logger.info("2/7 Vector Memory...")
         vector_memory = VectorMemory(
             path=str(settings.QDRANT_STORAGE_PATH),
-            collection_name=settings.QDRANT_COLLECTION_NAME,
+            collection_name="knowledge_base",
             vector_size=settings.EMBEDDING_DIM
         )
         
-        # 3. Database Manager
-        logger.info("3/7 Database Manager...")
-        db_manager = DatabaseManager(db_path=settings.SQLITE_PATH)
-        
-        # 4. Document Indexer
-        logger.info("4/7 Document Indexer...")
         indexer = DocumentIndexer(
             vector_memory=vector_memory,
             db_manager=db_manager,
@@ -63,47 +71,46 @@ def initialize_crew():
             chunk_overlap=settings.CHUNK_OVERLAP
         )
         
-        # 5. Conversational Agent CON MEMORIA
-        logger.info("5/7 Conversational Agent (LangChain + Hechos)...")
+        # Inicializar mem0 (en CPU)
+        try:
+            logger.info("🧠 Inicializando mem0 en CPU (CUDA deshabilitado)...")
+            memory_service = Mem0Wrapper(user_id="marcelo", organization_id="minerva")
+            logger.info("✅ mem0 inicializado correctamente en CPU")
+        except Exception as e:
+            logger.error(f"❌ Error inicializando mem0: {e}")
+            import traceback
+            traceback.print_exc()
+            memory_service = None
+        
+        # Agentes
         conversational_agent = ConversationalAgent(
             model_name=settings.OLLAMA_MODEL,
-            temperature=settings.OLLAMA_TEMPERATURE,
             db_manager=db_manager,
-            embedding_service=embedding_service,
-            vector_memory=vector_memory,
-            extraction_interval=1
+            memory_service=memory_service
         )
         
-        # 6. Knowledge Agent
-        logger.info("6/7 Knowledge Agent...")
         knowledge_agent = KnowledgeAgent(
             model_name=settings.OLLAMA_MODEL,
-            temperature=settings.OLLAMA_TEMPERATURE,
             db_manager=db_manager,
             indexer=indexer
         )
         
-        # 7. Web Agent
-        logger.info("7/7 Web Agent...")
         web_agent = WebAgent(
             model_name=settings.OLLAMA_MODEL,
-            temperature=settings.OLLAMA_TEMPERATURE,
             db_manager=db_manager
         )
         
-        # 8. MinervaCrew
-        logger.info("Creando MinervaCrew...")
-        from src.crew import MinervaCrew
+        # MinervaCrew
         crew = MinervaCrew(
             conversational_agent=conversational_agent,
             knowledge_agent=knowledge_agent,
             web_agent=web_agent,
             db_manager=db_manager,
             indexer=indexer,
-            memory_service=None
+            memory_service=memory_service
         )
         
-        logger.info("✅ MinervaCrew con memoria persistente listo")
+        logger.info("✅ MinervaCrew listo")
     
     return crew
 
@@ -131,21 +138,12 @@ def get_loaded_prompts_info():
         except:
             pass
         
-        # Fact Extractor
+        # Knowledge
         try:
-            hist = pm.get_prompt_history('fact_extractor', 'extraction_prompt', limit=1)
+            hist = pm.get_prompt_history('knowledge', 'system_prompt', limit=1)
             if hist:
-                info += f"**fact_extractor/**\n"
-                info += f"extraction_prompt v{hist[0].version}\n\n"
-        except:
-            pass
-        
-        # Router
-        try:
-            hist = pm.get_prompt_history('router', 'classification_prompt', limit=1)
-            if hist:
-                info += f"**router/**\n"
-                info += f"classification_prompt v{hist[0].version}\n\n"
+                info += f"**knowledge/**\n"
+                info += f"system_prompt v{hist[0].version}\n\n"
         except:
             pass
         
@@ -163,17 +161,12 @@ def initialize_conversation():
     try:
         crew = initialize_crew()
         
-        previous_conversation_id = current_conversation_id
-        
         conv = crew.db_manager.create_conversation(
             title=f"Conversación {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         )
         current_conversation_id = conv.id
         
         logger.info(f"✅ Nueva conversación: ID {current_conversation_id}")
-        
-        if previous_conversation_id:
-            logger.info(f"📋 Conversación anterior: ID {previous_conversation_id}")
         
         return []
     
@@ -185,7 +178,7 @@ def initialize_conversation():
 
 
 def chat_function(message: str, history):
-    """Procesa mensaje con memoria persistente."""
+    """Procesa mensaje con CrewAI + mem0."""
     global current_conversation_id, crew
     
     try:
@@ -196,24 +189,25 @@ def chat_function(message: str, history):
         if current_conversation_id is None:
             initialize_conversation()
         
+        # Procesar con MinervaCrew (CrewAI + mem0)
         response_data = crew.route(
             user_message=message,
             conversation_id=current_conversation_id
         )
         
         answer = response_data.get('answer', 'Lo siento, no pude generar una respuesta.')
-        agent_used = response_data.get('agent_used', 'unknown')
-        confidence = response_data.get('confidence', 'Media')
+        agent_used = response_data.get('agent', 'unknown')
         
         agent_icons = {
             'conversational': '💬',
             'knowledge': '📚',
             'web': '🌐',
-            'memory': '🧠'
+            'memory': '🧠',
+            'source_retrieval': '🔗'
         }
         
         icon = agent_icons.get(agent_used, '🤖')
-        response_with_meta = f"{answer}\n\n---\n*{icon} {agent_used.title()} • Confianza: {confidence}*"
+        response_with_meta = f"{answer}\n\n---\n*{icon} {agent_used.title()}*"
         
         return response_with_meta
     
@@ -232,34 +226,31 @@ def export_conversation():
         return "No hay conversación activa."
     
     try:
-        if crew is None:
-            crew = initialize_crew()
+        crew = initialize_crew()
         
+        # Usar LangChain memory
         from src.memory.langchain_memory import LangChainMemoryWrapper
         from config.settings import settings
         
-        langchain_mem = LangChainMemoryWrapper(
+        memory = LangChainMemoryWrapper(
             db_path=str(settings.SQLITE_PATH),
             conversation_id=current_conversation_id
         )
         
-        messages = langchain_mem.get_messages()
+        messages = memory.get_messages()  # Retorna lista de dicts
         
         if not messages:
-            return "La conversación está vacía."
+            return "Conversación vacía."
         
         export_text = f"=== Conversación Minerva ===\n"
         export_text += f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         export_text += f"ID: {current_conversation_id}\n"
         export_text += "=" * 50 + "\n\n"
         
+        # messages son dicts con 'role' y 'content'
         for msg in messages:
-            if hasattr(msg, 'type'):
-                role = "Usuario" if msg.type == "human" else "Minerva"
-            else:
-                role = "Usuario" if msg.__class__.__name__ == "HumanMessage" else "Minerva"
-            
-            export_text += f"{role}: {msg.content}\n\n"
+            role = "Usuario" if msg['role'] == 'user' else "Minerva"
+            export_text += f"{role}: {msg['content']}\n\n"
         
         return export_text
     
@@ -270,249 +261,444 @@ def export_conversation():
         return f"Error: {str(e)}"
 
 
-# ==================== GESTIÓN DE HECHOS ====================
+# ==================== GESTIÓN DE MEMORIA (mem0) ====================
 
-def load_all_facts() -> str:
-    """Carga todos los hechos almacenados en formato HTML."""
+def load_all_memories() -> str:
+    """
+    Carga todas las memorias de mem0.
+    
+    ESTRUCTURA REAL de mem0.get_all():
+    {
+        'results': [
+            {
+                'id': 'uuid-string',
+                'memory': 'El texto de la memoria',
+                'hash': 'hash-string',
+                'metadata': {...},
+                'created_at': 'timestamp',
+                'updated_at': 'timestamp',
+                'user_id': 'marcelo'
+            },
+            ...
+        ]
+    }
+    """
     try:
-        from src.embeddings import EmbeddingService
-        from src.memory.vector_store import VectorMemory
-        from config.settings import settings
+        crew = initialize_crew()
         
-        embedding_service = EmbeddingService(model_name=settings.EMBEDDING_MODEL)
-        vector_memory = VectorMemory(
-            path=str(settings.QDRANT_STORAGE_PATH),
-            collection_name=settings.QDRANT_COLLECTION_NAME,
-            vector_size=settings.EMBEDDING_DIM
-        )
+        if not crew.memory_service:
+            return "<p style='color: #666; text-align: center; padding: 20px; font-family: Montserrat;'>⚠️ mem0 no está inicializado</p>"
         
-        # Obtener todos los puntos
-        scroll_result = vector_memory.client.scroll(
-            collection_name=settings.QDRANT_COLLECTION_NAME,
-            limit=100,
-            with_payload=True,
-            with_vectors=False
-        )
+        logger.info("🔍 Cargando memorias de mem0...")
         
-        points = scroll_result[0]
+        # mem0 devuelve un dict con clave 'results'
+        response = crew.memory_service.get_all(limit=100)
         
-        # Filtrar solo hechos
-        facts = []
-        for point in points:
-            payload = point.payload or {}
-            if payload.get('type') == 'fact':
-                text = payload.get('text', '')
-                # Limpiar prefijos de categoría
-                for prefix in ['[personal] ', '[professional] ', '[personal_age] ', '[hobby] ']:
-                    text = text.replace(prefix, '')
-                
-                facts.append({
-                    'id': str(point.id),
-                    'text': text,
-                    'category': payload.get('category', 'unknown'),
-                    'created_at': payload.get('created_at', 'N/A')
-                })
+        logger.info(f"📊 Respuesta de mem0: {type(response)}")
+        if isinstance(response, dict):
+            logger.info(f"📊 Keys: {response.keys()}")
         
-        if not facts:
-            return "<p style='color: #666; text-align: center; padding: 20px;'>📭 No hay hechos almacenados</p>"
+        # Extraer la lista de memorias
+        if isinstance(response, dict):
+            memories = response.get('results', [])
+        elif isinstance(response, list):
+            memories = response
+        else:
+            memories = []
         
-        # HTML con cards de hechos
+        logger.info(f"📊 Total memorias encontradas: {len(memories)}")
+        
+        if not memories:
+            return "<p style='color: #666; text-align: center; padding: 20px; font-family: Montserrat;'>📭 No hay memorias almacenadas en mem0</p>"
+        
         html = f"""
         <style>
-            .facts-container {{
-                max-width: 100%;
-                margin: 10px 0;
+            * {{
+                font-family: 'Montserrat', sans-serif !important;
             }}
-            .facts-header {{
-                background: #f8f9fa;
-                padding: 10px 15px;
-                border-radius: 8px;
-                margin-bottom: 15px;
-                font-weight: 600;
+            .memory-container {{
+                max-height: 600px;
+                overflow-y: auto;
+                padding: 10px;
             }}
-            .fact-card {{
-                border: 1px solid #ddd;
-                border-radius: 8px;
-                padding: 15px;
-                margin: 10px 0;
-                background: white;
-                transition: all 0.2s;
+            .memory-card {{
+                border: 1px solid #e0e0e0;
+                border-radius: 12px;
+                padding: 16px;
+                margin: 12px 0;
+                background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+                transition: all 0.3s ease;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.05);
             }}
-            .fact-card:hover {{
-                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            .memory-card:hover {{
+                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                transform: translateY(-2px);
             }}
-            .fact-header {{
+            .memory-header {{
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                margin-bottom: 8px;
+                margin-bottom: 12px;
+                padding-bottom: 8px;
+                border-bottom: 2px solid #f0f0f0;
             }}
-            .fact-number {{
-                font-weight: 600;
-                color: #666;
-                font-size: 0.9em;
-            }}
-            .fact-category {{
-                display: inline-block;
-                padding: 3px 8px;
-                border-radius: 4px;
-                font-size: 0.85em;
-                background: #e9ecef;
-                color: #495057;
-            }}
-            .fact-text {{
+            .memory-number {{
+                font-weight: 700;
+                color: #2c3e50;
                 font-size: 1.1em;
-                margin: 10px 0;
-                line-height: 1.5;
+                font-family: 'Montserrat', sans-serif;
             }}
-            .fact-meta {{
-                font-size: 0.85em;
-                color: #6c757d;
-                margin-top: 8px;
+            .memory-id {{
+                font-family: 'Montserrat', monospace;
+                font-size: 0.75em;
+                color: #95a5a6;
+                background: #f8f9fa;
+                padding: 4px 8px;
+                border-radius: 4px;
+            }}
+            .memory-text {{
+                color: #2c3e50;
+                line-height: 1.7;
+                margin: 12px 0;
+                font-size: 0.95em;
+                font-family: 'Montserrat', sans-serif;
+                font-weight: 500;
+            }}
+            .memory-meta {{
+                font-size: 0.8em;
+                color: #7f8c8d;
+                border-top: 1px solid #ecf0f1;
+                padding-top: 10px;
+                margin-top: 10px;
+                font-family: 'Montserrat', sans-serif;
+            }}
+            .memory-meta-item {{
+                display: inline-block;
+                margin-right: 15px;
+                font-family: 'Montserrat', sans-serif;
             }}
         </style>
-        <div class='facts-container'>
-            <div class='facts-header'>
-                📊 Total de hechos almacenados: {len(facts)}
-            </div>
+        <div class='memory-container'>
         """
         
-        for i, fact in enumerate(facts, 1):
+        for i, mem in enumerate(memories, 1):
+            # Parsear correctamente la estructura de mem0
+            if isinstance(mem, dict):
+                memory_text = mem.get('memory', mem.get('text', 'Sin contenido'))
+                memory_id = mem.get('id', f'mem_{i}')
+                
+                # Parsear fechas
+                created = mem.get('created_at', 'Desconocido')
+                updated = mem.get('updated_at', 'Desconocido')
+                
+                # Formatear fechas si existen
+                if created != 'Desconocido':
+                    try:
+                        # Si es timestamp
+                        if isinstance(created, (int, float)):
+                            created_dt = datetime.fromtimestamp(created)
+                            created = created_dt.strftime('%Y-%m-%d %H:%M')
+                        # Si es string ISO
+                        elif isinstance(created, str):
+                            try:
+                                created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                                created = created_dt.strftime('%Y-%m-%d %H:%M')
+                            except:
+                                pass
+                    except:
+                        pass
+                
+                if updated != 'Desconocido':
+                    try:
+                        if isinstance(updated, (int, float)):
+                            updated_dt = datetime.fromtimestamp(updated)
+                            updated = updated_dt.strftime('%Y-%m-%d %H:%M')
+                        elif isinstance(updated, str):
+                            try:
+                                updated_dt = datetime.fromisoformat(updated.replace('Z', '+00:00'))
+                                updated = updated_dt.strftime('%Y-%m-%d %H:%M')
+                            except:
+                                pass
+                    except:
+                        pass
+                
+                # Obtener user_id si existe
+                user_id = mem.get('user_id', 'N/A')
+                
+            elif isinstance(mem, str):
+                # Fallback: si es string directo
+                memory_text = mem
+                memory_id = f"mem_{i}"
+                created = "Desconocido"
+                updated = "Desconocido"
+                user_id = "N/A"
+            else:
+                # Otro tipo
+                memory_text = str(mem)
+                memory_id = f"mem_{i}"
+                created = "Desconocido"
+                updated = "Desconocido"
+                user_id = "N/A"
+            
+            # Truncar ID si es muy largo (para UUIDs)
+            display_id = memory_id[:12] + '...' if len(memory_id) > 15 else memory_id
+            
             html += f"""
-            <div class='fact-card'>
-                <div class='fact-header'>
-                    <span class='fact-number'>#{i}</span>
-                    <span class='fact-category'>{fact['category']}</span>
+            <div class='memory-card'>
+                <div class='memory-header'>
+                    <span class='memory-number'>🧠 Memoria #{i}</span>
+                    <span class='memory-id' title='{memory_id}'>{display_id}</span>
                 </div>
-                <div class='fact-text'>{fact['text']}</div>
-                <div class='fact-meta'>
-                    📅 Creado: {fact['created_at'][:19] if len(fact['created_at']) > 19 else fact['created_at']}
+                <div class='memory-text'>{memory_text}</div>
+                <div class='memory-meta'>
+                    <span class='memory-meta-item'>📅 Creado: {created}</span>
+                    <span class='memory-meta-item'>🔄 Actualizado: {updated}</span>
+                    <span class='memory-meta-item'>👤 Usuario: {user_id}</span>
                 </div>
             </div>
             """
         
         html += "</div>"
+        
         return html
         
     except Exception as e:
-        logger.error(f"Error cargando hechos: {e}")
+        logger.error(f"❌ Error cargando memorias: {e}")
         import traceback
         traceback.print_exc()
-        return f"<p style='color: red;'>❌ Error: {str(e)}</p>"
+        return f"<p style='color: red; font-family: Montserrat;'>❌ Error: {str(e)}</p>"
 
 
-def get_fact_ids_list() -> list:
-    """Obtiene lista de IDs de hechos para el dropdown."""
+def get_memory_ids_list() -> List[str]:
+    """Obtiene lista de IDs de memorias para dropdown."""
     try:
-        from src.memory.vector_store import VectorMemory
-        from config.settings import settings
+        crew = initialize_crew()
         
-        vector_memory = VectorMemory(
-            path=str(settings.QDRANT_STORAGE_PATH),
-            collection_name=settings.QDRANT_COLLECTION_NAME,
-            vector_size=settings.EMBEDDING_DIM
-        )
+        if not crew.memory_service:
+            logger.warning("⚠️ memory_service no disponible")
+            return []
         
-        scroll_result = vector_memory.client.scroll(
-            collection_name=settings.QDRANT_COLLECTION_NAME,
-            limit=100,
-            with_payload=True,
-            with_vectors=False
-        )
+        response = crew.memory_service.get_all(limit=100)
         
-        fact_options = []
-        for point in scroll_result[0]:
-            payload = point.payload or {}
-            if payload.get('type') == 'fact':
-                text = payload.get('text', '')
-                for prefix in ['[personal] ', '[professional] ', '[personal_age] ']:
-                    text = text.replace(prefix, '')
-                # Limitar texto a 80 caracteres
-                display_text = text[:80] + "..." if len(text) > 80 else text
-                fact_options.append((display_text, str(point.id)))
-        
-        return fact_options if fact_options else [("No hay hechos", "")]
-        
-    except Exception as e:
-        logger.error(f"Error obteniendo IDs: {e}")
-        return [("Error cargando", "")]
-
-
-def delete_fact(fact_id: str) -> Tuple[str, str]:
-    """Elimina un hecho por su ID."""
-    try:
-        if not fact_id:
-            return "⚠️ Selecciona un hecho para eliminar", load_all_facts()
-        
-        from src.memory.vector_store import VectorMemory
-        from config.settings import settings
-        
-        vector_memory = VectorMemory(
-            path=str(settings.QDRANT_STORAGE_PATH),
-            collection_name=settings.QDRANT_COLLECTION_NAME,
-            vector_size=settings.EMBEDDING_DIM
-        )
-        
-        # Eliminar el punto
-        vector_memory.client.delete(
-            collection_name=settings.QDRANT_COLLECTION_NAME,
-            points_selector=[fact_id]
-        )
-        
-        return "✅ Hecho eliminado correctamente", load_all_facts()
-        
-    except Exception as e:
-        logger.error(f"Error eliminando hecho: {e}")
-        return f"❌ Error: {str(e)}", load_all_facts()
-
-
-def clear_all_facts() -> Tuple[str, str]:
-    """Elimina TODOS los hechos (PELIGROSO)."""
-    try:
-        from src.memory.vector_store import VectorMemory
-        from config.settings import settings
-        
-        vector_memory = VectorMemory(
-            path=str(settings.QDRANT_STORAGE_PATH),
-            collection_name=settings.QDRANT_COLLECTION_NAME,
-            vector_size=settings.EMBEDDING_DIM
-        )
-        
-        # Obtener todos los IDs de hechos
-        scroll_result = vector_memory.client.scroll(
-            collection_name=settings.QDRANT_COLLECTION_NAME,
-            limit=1000,
-            with_payload=True,
-            with_vectors=False
-        )
-        
-        fact_ids = []
-        for point in scroll_result[0]:
-            payload = point.payload or {}
-            if payload.get('type') == 'fact':
-                fact_ids.append(str(point.id))
-        
-        if fact_ids:
-            vector_memory.client.delete(
-                collection_name=settings.QDRANT_COLLECTION_NAME,
-                points_selector=fact_ids
-            )
-            
-            return f"✅ Se eliminaron {len(fact_ids)} hechos", load_all_facts()
+        # Extraer lista de memorias
+        if isinstance(response, dict):
+            memories = response.get('results', [])
+        elif isinstance(response, list):
+            memories = response
         else:
-            return "⚠️ No había hechos para eliminar", load_all_facts()
+            memories = []
+        
+        logger.info(f"📋 Obtenidos {len(memories)} IDs de memorias")
+        
+        if not memories:
+            return []
+        
+        # Crear opciones legibles: "ID - Preview del texto"
+        options = []
+        for i, mem in enumerate(memories, 1):
+            if isinstance(mem, dict):
+                memory_id = mem.get('id', f'mem_{i}')
+                text = mem.get('memory', mem.get('text', 'Sin texto'))
+            elif isinstance(mem, str):
+                memory_id = f"mem_{i}"
+                text = mem
+            else:
+                memory_id = f"mem_{i}"
+                text = str(mem)
+            
+            # Truncar texto para preview
+            preview = text[:50] + "..." if len(text) > 50 else text
+            option = f"{memory_id}|||{preview}"  # Separador único
+            options.append(option)
+            
+            logger.info(f"  #{i}: {memory_id} - {preview[:30]}...")
+        
+        return options
         
     except Exception as e:
-        logger.error(f"Error limpiando hechos: {e}")
-        return f"❌ Error: {str(e)}", load_all_facts()
+        logger.error(f"❌ Error obteniendo IDs: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def delete_memory(memory_option: str) -> Tuple[str, str]:
+    """
+    Elimina una memoria específica.
+    
+    FIX v7.3.0: Manejo robusto de IDs con validación.
+    """
+    try:
+        logger.info(f"🗑️ Intentando eliminar: '{memory_option}'")
+        
+        if not memory_option or memory_option.strip() == "":
+            logger.warning("⚠️ Opción vacía")
+            return "⚠️ Selecciona una memoria primero", load_all_memories()
+        
+        crew = initialize_crew()
+        
+        if not crew.memory_service:
+            logger.error("❌ memory_service no disponible")
+            return "❌ mem0 no inicializado", load_all_memories()
+        
+        # Extraer ID usando el separador único
+        if "|||" in memory_option:
+            memory_id = memory_option.split("|||")[0].strip()
+        else:
+            # Fallback: usar espacio como separador
+            parts = memory_option.split(" - ")
+            if len(parts) > 0:
+                memory_id = parts[0].strip()
+            else:
+                memory_id = memory_option.strip()
+        
+        logger.info(f"🔑 ID extraído: '{memory_id}'")
+        
+        if not memory_id:
+            logger.error("❌ ID vacío después de parseo")
+            return "❌ Error: ID inválido", load_all_memories()
+        
+        # Validar que la memoria existe antes de eliminar
+        logger.info(f"🔍 Validando existencia de memoria '{memory_id}'...")
+        all_mems = crew.memory_service.get_all(limit=100)
+        
+        if isinstance(all_mems, dict):
+            memories = all_mems.get('results', [])
+        elif isinstance(all_mems, list):
+            memories = all_mems
+        else:
+            memories = []
+        
+        memory_exists = False
+        for mem in memories:
+            if isinstance(mem, dict):
+                if mem.get('id') == memory_id:
+                    memory_exists = True
+                    logger.info(f"✅ Memoria encontrada: {mem.get('memory', '')[:50]}")
+                    break
+        
+        if not memory_exists:
+            logger.warning(f"⚠️ Memoria '{memory_id}' no encontrada en lista")
+            return f"⚠️ Memoria '{memory_id}' no encontrada", load_all_memories()
+        
+        # Intentar eliminar
+        logger.info(f"🗑️ Eliminando memoria '{memory_id}'...")
+        crew.memory_service.delete(memory_id=memory_id)
+        logger.info(f"✅ Memoria '{memory_id}' eliminada")
+        
+        return f"✅ Memoria eliminada: {memory_id}", load_all_memories()
+        
+    except Exception as e:
+        logger.error(f"❌ Error eliminando memoria: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"❌ Error: {str(e)}", load_all_memories()
+
+
+def clear_all_memories() -> Tuple[str, str]:
+    """Elimina TODAS las memorias."""
+    try:
+        logger.info("🗑️ Eliminando TODAS las memorias...")
+        
+        crew = initialize_crew()
+        
+        if not crew.memory_service:
+            logger.error("❌ memory_service no disponible")
+            return "❌ mem0 no inicializado", ""
+        
+        crew.memory_service.delete_all()
+        logger.info("✅ Todas las memorias eliminadas")
+        
+        return "✅ Todas las memorias eliminadas", load_all_memories()
+        
+    except Exception as e:
+        logger.error(f"❌ Error limpiando memorias: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"❌ Error: {str(e)}", load_all_memories()
 
 
 def create_interface():
-    """Crea interfaz Gradio con tab de hechos."""
+    """Crea interfaz Gradio completa con fuente Montserrat."""
     
-    with gr.Blocks(title="Minerva Chat", theme=gr.themes.Soft()) as interface:
+    # CSS personalizado con Montserrat GLOBAL
+    custom_css = """
+    /* Importar Montserrat */
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap');
+    
+    /* Aplicar Montserrat a TODO */
+    * {
+        font-family: 'Montserrat', sans-serif !important;
+    }
+    
+    body {
+        font-family: 'Montserrat', sans-serif !important;
+    }
+    
+    /* Mensajes del chat */
+    .message {
+        font-family: 'Montserrat', sans-serif !important;
+        font-size: 15px;
+        line-height: 1.7;
+    }
+    
+    /* Contenido en prosa */
+    .prose {
+        font-family: 'Montserrat', sans-serif !important;
+    }
+    
+    /* Inputs */
+    input, textarea, select {
+        font-family: 'Montserrat', sans-serif !important;
+    }
+    
+    /* Botones */
+    button {
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 600 !important;
+    }
+    
+    /* Labels */
+    label {
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 500 !important;
+    }
+    
+    /* Markdown */
+    .markdown-text {
+        font-family: 'Montserrat', sans-serif !important;
+    }
+    
+    /* Headers en Gradio */
+    h1, h2, h3, h4, h5, h6 {
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 700 !important;
+    }
+    
+    /* Tabs */
+    .tab-nav button {
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 600 !important;
+    }
+    
+    /* Dropdowns */
+    .dropdown-menu {
+        font-family: 'Montserrat', sans-serif !important;
+    }
+    
+    /* Info boxes */
+    .gr-box {
+        font-family: 'Montserrat', sans-serif !important;
+    }
+    """
+    
+    with gr.Blocks(
+        title="Minerva Chat", 
+        theme=gr.themes.Soft(),
+        css=custom_css
+    ) as interface:
         
-        gr.Markdown("# 🧠 Minerva - Asistente con Memoria Persistente")
+        gr.Markdown("# 🧠 Minerva v7.3.0 - CrewAI + mem0 (CPU)")
         
         with gr.Tabs():
             
@@ -520,10 +706,12 @@ def create_interface():
             with gr.Tab("💬 Chat"):
                 with gr.Row():
                     with gr.Column(scale=4):
+                        # FIX: Usar type='messages' en lugar de 'tuples'
                         chatbot = gr.Chatbot(
                             height=400,
                             show_label=False,
-                            avatar_images=(None, "🧠")
+                            avatar_images=(None, "🧠"),
+                            type="messages"
                         )
                         
                         with gr.Row():
@@ -548,7 +736,15 @@ def create_interface():
                         
                         refresh_prompts_btn = gr.Button("🔄 Actualizar", size="sm")
                         
-                        gr.Markdown("\n**Modelo:** Phi3\n**Memoria:** Activa")
+                        gr.Markdown("""
+**Modelo:** Phi3 (Ollama)
+**Orquestador:** CrewAI 1.1.0
+**Memoria:** mem0 1.0.0 (CPU)
+**Agentes:** 3
+
+⚠️ **Nota:** CUDA deshabilitado
+(GTX 1050 incompatible)
+                        """)
                         
                         export_output = gr.Textbox(
                             label="Exportar",
@@ -556,17 +752,31 @@ def create_interface():
                             visible=False
                         )
                 
-                # Event handlers
+                # Event handlers adaptados a type='messages'
                 def user_message(message, history):
-                    return "", history + [[message, None]]
+                    """Adapta al formato messages de Gradio."""
+                    return "", history + [{"role": "user", "content": message}]
                 
                 def bot_response(history):
-                    if not history or history[-1][1] is not None:
+                    """Procesa y responde en formato messages."""
+                    if not history or history[-1].get("role") != "user":
                         return history, get_loaded_prompts_info()
                     
-                    user_msg = history[-1][0]
-                    bot_msg = chat_function(user_msg, history[:-1])
-                    history[-1][1] = bot_msg
+                    user_msg = history[-1]["content"]
+                    
+                    # Convertir historial a formato antiguo para chat_function
+                    old_format_history = []
+                    for msg in history[:-1]:
+                        if msg["role"] == "user":
+                            old_format_history.append([msg["content"], None])
+                        elif msg["role"] == "assistant":
+                            if old_format_history and old_format_history[-1][1] is None:
+                                old_format_history[-1][1] = msg["content"]
+                    
+                    bot_msg = chat_function(user_msg, old_format_history)
+                    
+                    # Agregar respuesta
+                    history.append({"role": "assistant", "content": bot_msg})
                     
                     return history, get_loaded_prompts_info()
                 
@@ -593,10 +803,14 @@ def create_interface():
                 )
                 
                 clear_btn.click(
-                    initialize_conversation,
+                    lambda: [],
                     None,
                     chatbot,
                     queue=False
+                ).then(
+                    initialize_conversation,
+                    None,
+                    None
                 ).then(
                     lambda: get_loaded_prompts_info(),
                     None,
@@ -619,86 +833,104 @@ def create_interface():
                     export_output
                 )
             
-            # ============= TAB 2: HECHOS =============
-            with gr.Tab("🧠 Hechos Almacenados"):
+            # ============= TAB 2: MEMORIA (mem0) =============
+            with gr.Tab("🧠 Memoria (mem0)"):
                 
                 gr.Markdown("""
-                ### Gestión de Hechos
+                ### Gestión de Memoria (mem0)
                 
-                Aquí puedes ver todos los hechos que Minerva ha aprendido sobre ti.
-                Los hechos se extraen automáticamente de las conversaciones.
+                mem0 gestiona automáticamente la memoria persistente.
+                Extrae, consolida y actualiza información relevante del usuario.
+                
+                **Características:**
+                - ✅ Consolidación automática de información
+                - ✅ Actualización inteligente de hechos
+                - ✅ Eliminación de duplicados
+                - ✅ Memoria que trasciende conversaciones
+                
+                **Nota:** Ejecutándose en CPU (CUDA deshabilitado para GTX 1050)
                 """)
                 
                 with gr.Row():
-                    refresh_facts_btn = gr.Button("🔄 Recargar Hechos", variant="primary", scale=1)
-                    clear_all_btn = gr.Button("🗑️ Eliminar TODOS los Hechos", variant="stop", scale=1)
+                    refresh_mem_btn = gr.Button("🔄 Recargar Memorias", variant="primary", scale=1)
+                    clear_all_mem_btn = gr.Button("🗑️ Eliminar TODAS", variant="stop", scale=1)
                 
-                facts_result = gr.Markdown("")
+                memory_result = gr.Markdown("")
                 
-                facts_display = gr.HTML(
-                    value=load_all_facts(),
-                    label="Hechos"
+                memories_display = gr.HTML(
+                    value=load_all_memories(),
+                    label="Memorias"
                 )
                 
                 gr.Markdown("---")
-                gr.Markdown("### Eliminar Hecho Individual")
+                gr.Markdown("### Eliminar Memoria Individual")
                 
                 with gr.Row():
-                    fact_selector = gr.Dropdown(
+                    memory_selector = gr.Dropdown(
                         choices=[],
-                        label="Selecciona un hecho para eliminar",
-                        scale=3
+                        label="Selecciona una memoria para eliminar",
+                        scale=3,
+                        allow_custom_value=True
                     )
-                    delete_fact_btn = gr.Button("🗑️ Eliminar", variant="stop", scale=1)
+                    delete_memory_btn = gr.Button("🗑️ Eliminar", variant="stop", scale=1)
                 
                 delete_result = gr.Markdown("")
                 
                 # Eventos
-                def refresh_facts_and_dropdown():
-                    facts_html = load_all_facts()
-                    fact_options = get_fact_ids_list()
-                    return facts_html, gr.Dropdown(choices=fact_options)
+                def refresh_memories_and_dropdown():
+                    memories_html = load_all_memories()
+                    memory_options = get_memory_ids_list()
+                    return memories_html, gr.Dropdown(choices=memory_options)
                 
-                refresh_facts_btn.click(
-                    refresh_facts_and_dropdown,
+                refresh_mem_btn.click(
+                    refresh_memories_and_dropdown,
                     None,
-                    [facts_display, fact_selector]
+                    [memories_display, memory_selector]
                 )
                 
-                delete_fact_btn.click(
-                    delete_fact,
-                    inputs=fact_selector,
-                    outputs=[delete_result, facts_display]
+                delete_memory_btn.click(
+                    delete_memory,
+                    inputs=memory_selector,
+                    outputs=[delete_result, memories_display]
                 ).then(
-                    refresh_facts_and_dropdown,
+                    refresh_memories_and_dropdown,
                     None,
-                    [facts_display, fact_selector]
+                    [memories_display, memory_selector]
                 )
                 
-                clear_all_btn.click(
-                    clear_all_facts,
+                clear_all_mem_btn.click(
+                    clear_all_memories,
                     None,
-                    [facts_result, facts_display]
+                    [memory_result, memories_display]
                 ).then(
-                    refresh_facts_and_dropdown,
+                    refresh_memories_and_dropdown,
                     None,
-                    [facts_display, fact_selector]
+                    [memories_display, memory_selector]
                 )
                 
                 # Cargar dropdown inicial
                 interface.load(
-                    get_fact_ids_list,
+                    get_memory_ids_list,
                     None,
-                    fact_selector
+                    memory_selector
                 )
         
         gr.Markdown(
             """
             ---
-            <div style='text-align: center; color: #666; font-size: 0.9em;'>
-                🧠 <strong>Minerva</strong> - Tu asistente con memoria persistente real
+            <div style='text-align: center; color: #666; font-size: 0.9em; font-family: Montserrat;'>
+                🧠 <strong>Minerva v7.3.0</strong> - CrewAI + mem0 (CPU) + Debugging Mejorado
             </div>
             """
         )
     
     return interface
+
+
+if __name__ == "__main__":
+    demo = create_interface()
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False
+    )

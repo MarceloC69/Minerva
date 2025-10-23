@@ -12,5 +12,6 @@ from .mem0_wrapper import Mem0Wrapper
 
 __all__ = [
     'VectorMemory',
-    'Mem0Wrapper'
+    'Mem0Wrapper',
+    'LangChainMemoryWrapper'
 ]

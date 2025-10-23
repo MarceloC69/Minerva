@@ -10,7 +10,6 @@ import requests
 import time
 
 from .base_agent import BaseAgent, AgentExecutionError
-from config.prompts import get_agent_config
 from config.settings import settings
 
 
@@ -58,8 +57,8 @@ class KnowledgeAgent(BaseAgent):
         if not self.indexer:
             raise AgentExecutionError("KnowledgeAgent requiere un DocumentIndexer")
         
-        # Obtener configuración de prompts
-        self.config = get_agent_config('knowledge')
+        # Cargar prompts desde DB
+        self._load_prompts()
         
         # Verificar conexión con Ollama
         try:
@@ -68,6 +67,36 @@ class KnowledgeAgent(BaseAgent):
         except Exception as e:
             self.logger.error(f"Error configurando LLM: {e}")
             raise AgentExecutionError(f"No se pudo conectar a Ollama: {e}")
+    
+    def _load_prompts(self):
+        """Carga prompts desde la base de datos."""
+        if not self.db_manager:
+            error_msg = "❌ CRITICAL: No hay db_manager disponible"
+            self.logger.error(error_msg)
+            raise AgentExecutionError(error_msg)
+        
+        try:
+            from src.database.prompt_manager import PromptManager
+            prompt_manager = PromptManager(self.db_manager)
+            
+            self.system_prompt = prompt_manager.get_active_prompt(
+                agent_type='knowledge',
+                prompt_name='system_prompt'
+            )
+            
+            if not self.system_prompt:
+                error_msg = "❌ CRITICAL: No se encontró 'system_prompt' para knowledge"
+                self.logger.error(error_msg)
+                raise AgentExecutionError(error_msg)
+            
+            self.logger.info("✅ Prompts de knowledge cargados correctamente")
+                
+        except AgentExecutionError:
+            raise
+        except Exception as e:
+            error_msg = f"❌ CRITICAL: Error cargando prompts: {e}"
+            self.logger.error(error_msg)
+            raise AgentExecutionError(error_msg)
     
     def _verify_connection(self) -> None:
         """Verifica que Ollama esté accesible."""
@@ -117,13 +146,8 @@ class KnowledgeAgent(BaseAgent):
         Returns:
             Prompt completo
         """
-        system_prompt = f"""{self.config['role']}
-
-**Tu proceso:**
-1. Analiza el contexto proporcionado de los documentos
-2. Responde la pregunta basándote en ese contexto
-3. Cita las fuentes cuando sea relevante
-4. Si el contexto no es suficiente, indícalo claramente
+        # Usar system_prompt de la DB
+        base_system = f"""{self.system_prompt}
 
 **Nivel de confianza en el contexto: {confidence}**
 
@@ -133,7 +157,7 @@ class KnowledgeAgent(BaseAgent):
 - No inventes información que no esté en el contexto
 """
         
-        prompt = f"""{system_prompt}
+        prompt = f"""{base_system}
 
 ===== CONTEXTO DE DOCUMENTOS =====
 {context}
@@ -232,7 +256,7 @@ Minerva (basándome en los documentos):"""
                     "temperature": self.temperature,
                     "stream": False
                 },
-                timeout=90
+                timeout=120
             )
             
             response.raise_for_status()

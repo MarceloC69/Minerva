@@ -1,4 +1,4 @@
-# config/settings.py - v6.0.0
+# config/settings.py
 """
 Configuración centralizada de Minerva usando Pydantic Settings.
 Incluye configuración para CrewAI + mem0.
@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     UPLOADS_DIR: Path = Field(
         default_factory=lambda: Path(__file__).parent.parent / "data" / "uploads"
     )
+    UPLOAD_DIR: Path = Field(
+        default_factory=lambda: Path(__file__).parent.parent / "data" / "uploads"
+    )
     LOGS_DIR: Path = Field(
         default_factory=lambda: Path(__file__).parent.parent / "logs"
     )
@@ -47,11 +50,14 @@ class Settings(BaseSettings):
     
     # Configuración de Ollama
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "phi3"
+    OLLAMA_MODEL: str = "phi3:latest"  # ← FIX: Agregado :latest
     OLLAMA_TEMPERATURE: float = 0.7
     
     # Configuración de Web Search (Serper.dev)
-    SERPER_API_KEY: str = Field(default="")  # Se carga desde .env
+    SERPER_API_KEY: str = Field(default="3ef61ab84a2e43cd69eb1c9518f5fb79f58e335c")
+    
+    # Configuración de UI
+    GRADIO_PORT: int = 7860  # ← FIX: Agregado
     
     # Límites y configuraciones
     MAX_SEARCH_RESULTS: int = 5

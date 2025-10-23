@@ -1,103 +1,123 @@
-# main.py - v6.0.0 - Minerva con CrewAI + mem0
+# main.py
 """
 Punto de entrada principal de Minerva.
-Inicializa todos los componentes y lanza la UI de Gradio.
+Versión 2.1.0 - Con CrewAI + Mem0
 """
 
+import os
+import sys
 import logging
 from pathlib import Path
 
-# Configurar logging
+# Logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
 )
 logger = logging.getLogger(__name__)
 
+# Imports
+from config.settings import settings
+from src.ui.chat_interface import create_interface as create_chat_interface
+from src.ui.prompt_admin import create_prompt_admin_interface
+
+
+def verify_ollama():
+    """Verifica que Ollama esté corriendo."""
+    import requests
+    try:
+        response = requests.get(f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=2)
+        if response.status_code == 200:
+            logger.info("✅ Ollama está corriendo")
+            return True
+    except:
+        pass
+    
+    logger.error("❌ Ollama NO está corriendo")
+    logger.error("   Ejecuta: ollama serve")
+    return False
+
+
+def verify_model():
+    """Verifica que el modelo esté descargado."""
+    import requests
+    try:
+        response = requests.get(f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=2)
+        if response.status_code == 200:
+            models = response.json().get('models', [])
+            model_names = [m['name'] for m in models]
+            
+            # Buscar el modelo (con o sin :latest)
+            model_found = False
+            for name in model_names:
+                if settings.OLLAMA_MODEL in name or name in settings.OLLAMA_MODEL:
+                    model_found = True
+                    logger.info(f"✅ Modelo {name} disponible")
+                    break
+            
+            if not model_found:
+                logger.error(f"❌ Modelo {settings.OLLAMA_MODEL} NO encontrado")
+                logger.error(f"   Modelos disponibles: {', '.join(model_names)}")
+                logger.error(f"   Descarga con: ollama pull phi3")
+                return False
+            
+            return True
+    except Exception as e:
+        logger.error(f"❌ Error verificando modelo: {e}")
+        return False
+
 
 def main():
-    """Inicializa Minerva y lanza la UI."""
-    
-    logger.info("=" * 70)
-    logger.info("🧠 MINERVA v6.0.0 - Con CrewAI + mem0")
-    logger.info("=" * 70)
-    
+    """Función principal."""
     try:
-        # Importar configuración
-        from config.settings import settings
-        logger.info(f"✅ Configuración cargada desde {settings.SQLITE_PATH}")
+        logger.info("🚀 Iniciando Minerva v2.1.0...")
         
-        # Importar componentes
-        from src.database import DatabaseManager
-        from src.embeddings import EmbeddingService
-        from src.memory.vector_store import VectorMemory
-        from src.processing.indexer import DocumentIndexer
-        from src.tools.web_search import WebSearchTool
-        from src.crew.minerva_crew import MinervaCrew
+        # Verificaciones
+        if not verify_ollama():
+            sys.exit(1)
         
-        # 1. Database Manager
-        logger.info("1/6 Inicializando Database Manager...")
-        db_manager = DatabaseManager(db_path=settings.SQLITE_PATH)
+        if not verify_model():
+            sys.exit(1)
         
-        # 2. Embedding Service
-        logger.info("2/6 Inicializando Embedding Service...")
-        embedding_service = EmbeddingService(
-            model_name=settings.EMBEDDING_MODEL
+        # Crear interfaz Gradio
+        logger.info("🎨 Creando interfaz Gradio...")
+        
+        # FIX: NO usar 'with', solo llamar las funciones
+        chat_ui = create_chat_interface()
+        admin_ui = create_prompt_admin_interface()
+        
+        # Crear app completa
+        import gradio as gr
+        
+        app = gr.TabbedInterface(
+            [chat_ui, admin_ui],
+            ["💬 Chat", "⚙️ Admin Prompts"],
+            title="🧠 Minerva - Asistente Personal Local",
+            theme=gr.themes.Soft()
         )
         
-        # 3. Vector Memory (para documentos, no para mem0)
-        logger.info("3/6 Inicializando Vector Memory...")
-        vector_memory = VectorMemory(
-            path=str(settings.QDRANT_STORAGE_PATH),
-            collection_name="knowledge_base",  # Para documentos
-            vector_size=settings.EMBEDDING_DIM
-        )
+        # Lanzar
+        logger.info("✅ Minerva lista")
+        logger.info(f"🌐 Abriendo en: http://localhost:{settings.GRADIO_PORT}")
         
-        # 4. Document Indexer
-        logger.info("4/6 Inicializando Document Indexer...")
-        indexer = DocumentIndexer(
-            vector_memory=vector_memory,
-            db_manager=db_manager,
-            embedding_service=embedding_service,
-            chunk_size=settings.CHUNK_SIZE,
-            chunk_overlap=settings.CHUNK_OVERLAP
-        )
-        
-        # 5. Web Search Service
-        logger.info("5/6 Inicializando Web Search...")
-        web_search = WebSearchTool(api_key=settings.SERPER_API_KEY)
-        
-        # 6. MinervaCrew (con CrewAI + mem0)
-        logger.info("6/6 Inicializando MinervaCrew (CrewAI + mem0)...")
-        crew = MinervaCrew(
-            db_manager=db_manager,
-            indexer=indexer,
-            web_search_service=web_search
-        )
-        
-        logger.info("=" * 70)
-        logger.info("✅ Todos los componentes inicializados correctamente")
-        logger.info("=" * 70)
-        
-        # Lanzar UI
-        logger.info("🚀 Lanzando interfaz Gradio...")
-        from src.ui.chat_interface import create_interface
-        
-        interface = create_interface()
-        
-        interface.launch(
+        app.launch(
             server_name="0.0.0.0",
-            server_port=7860,
+            server_port=settings.GRADIO_PORT,
             share=False,
             show_error=True
         )
-        
+    
     except KeyboardInterrupt:
-        logger.info("\n👋 Minerva detenido por el usuario")
+        logger.info("\n👋 Minerva cerrada por usuario")
     
     except Exception as e:
-        logger.error(f"❌ Error fatal: {e}", exc_info=True)
-        raise
+        logger.error(f"❌ Error fatal: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
