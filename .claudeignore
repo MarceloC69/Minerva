@@ -1,0 +1,94 @@
+# ============================================
+# MINERVA - .claudeignore
+# ============================================
+# Archivos/directorios que NO se subirán a Claude
+# Esto reduce el tamaño del contexto y evita límites
+# ============================================
+
+# ====== CRÍTICO: DATOS PESADOS ======
+# Directorio data/ completo (477 MB)
+data/qdrant_storage/
+data/sqlite/*.db
+data/sqlite/*.db-journal
+data/uploads/
+data/backups/
+data/temp/
+
+# Mantener solo READMEs informativos
+!data/*/README.md
+
+# ====== ENTORNOS VIRTUALES ======
+venv/
+minerva_env/
+ENV/
+env/
+.venv/
+
+# ====== PYTHON CACHE ======
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# ====== IDEs ======
+.vscode/
+.idea/
+*.sublime-workspace
+
+# ====== GIT ======
+.git/
+
+# ====== LOGS ======
+logs/
+*.log
+
+# ====== JUPYTER ======
+.ipynb_checkpoints/
+notebooks/*.png
+notebooks/*.jpg
+
+# ====== SYSTEM ======
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ====== TESTING ======
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ====== BUILDS ======
+build/
+dist/
+*.egg-info/
+
+# ====== MODELOS Y CACHE ======
+.cache/
+models/
+*.gguf
+
+# ====== EXPORTS (mantener vacío para estructura) ======
+data/exports/*.txt
+data/exports/*.json
+!data/exports/.gitkeep
+
+# ====== ARCHIVOS GRANDES ======
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.bin
+
+# ============================================
+# RESULTADO ESPERADO AL SUBIR A CLAUDE:
+#
+# SIN .claudeignore:  ~478 MB (límite rápido)
+# CON .claudeignore:  ~1-2 MB (óptimo)
+#
+# Incluye: código fuente, configs, tests
+# Excluye: datos, caches, binarios
+# ============================================
