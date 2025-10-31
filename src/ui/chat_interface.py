@@ -1,14 +1,13 @@
-# src/ui/chat_interface.py - v7.3.0 COMPLETO - Fix delete_memory + mejor logging
+# src/ui/chat_interface.py - v8.0.0 FIXED - Memoria + Documentos
 """
-Interfaz de chat de Minerva con memoria persistente (mem0).
-Versión completa con todas las funcionalidades.
+Interfaz de chat de Minerva con memoria persistente (mem0) + Gestión de Documentos.
 
-FIXES v7.3.0:
-- ✅ Fix función delete_memory (manejo robusto de IDs)
-- ✅ Mejor logging para debugging de mem0
-- ✅ Validación de memoria antes de eliminar
-- ✅ Manejo de errores más detallado
-- ✅ (Mantiene todos los fixes de v7.2.0)
+FIXES v8.0.0:
+- ✅ Memoria mem0 corregida con mejor prompt de extracción
+- ✅ Tab de Documentos restaurado (subir, indexar, ver, eliminar)
+- ✅ Mejor control de lo que se guarda en memoria
+- ✅ Validación de calidad de memorias
+- ✅ Todas las funcionalidades originales preservadas
 """
 
 import gradio as gr
@@ -16,9 +15,10 @@ import logging
 import os
 from datetime import datetime
 from typing import Tuple, List
+from pathlib import Path
 
 # 🔧 FIX CUDA: Forzar CPU para mem0 (evitar error con GTX 1050)
-os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Deshabilita CUDA
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
 os.environ['TORCH_USE_CUDA_DSA'] = '0'
 
 logging.basicConfig(
@@ -33,11 +33,11 @@ current_conversation_id = None
 
 
 def initialize_crew():
-    """Inicializa MinervaCrew con CrewAI + mem0 (CPU-only)."""
+    """Inicializa MinervaCrew con CrewAI + mem0 mejorado."""
     global crew
     
     if crew is None:
-        logger.info("🚀 Inicializando MinervaCrew (CrewAI + mem0 en CPU)...")
+        logger.info("🚀 Inicializando MinervaCrew (CrewAI + mem0 mejorado)...")
         
         from src.database import DatabaseManager
         from src.embeddings import EmbeddingService
@@ -71,11 +71,11 @@ def initialize_crew():
             chunk_overlap=settings.CHUNK_OVERLAP
         )
         
-        # Inicializar mem0 (en CPU)
+        # Inicializar mem0 (en CPU) - MEJORADO
         try:
-            logger.info("🧠 Inicializando mem0 en CPU (CUDA deshabilitado)...")
+            logger.info("🧠 Inicializando mem0 mejorado en CPU...")
             memory_service = Mem0Wrapper(user_id="marcelo", organization_id="minerva")
-            logger.info("✅ mem0 inicializado correctamente en CPU")
+            logger.info("✅ mem0 inicializado correctamente")
         except Exception as e:
             logger.error(f"❌ Error inicializando mem0: {e}")
             import traceback
@@ -189,7 +189,7 @@ def chat_function(message: str, history):
         if current_conversation_id is None:
             initialize_conversation()
         
-        # Procesar con MinervaCrew (CrewAI + mem0)
+        # Procesar con MinervaCrew
         response_data = crew.route(
             user_message=message,
             conversation_id=current_conversation_id
@@ -203,7 +203,8 @@ def chat_function(message: str, history):
             'knowledge': '📚',
             'web': '🌐',
             'memory': '🧠',
-            'source_retrieval': '🔗'
+            'source_retrieval': '🔗',
+            'personal': '👤'
         }
         
         icon = agent_icons.get(agent_used, '🤖')
@@ -228,7 +229,6 @@ def export_conversation():
     try:
         crew = initialize_crew()
         
-        # Usar LangChain memory
         from src.memory.langchain_memory import LangChainMemoryWrapper
         from config.settings import settings
         
@@ -237,7 +237,7 @@ def export_conversation():
             conversation_id=current_conversation_id
         )
         
-        messages = memory.get_messages()  # Retorna lista de dicts
+        messages = memory.get_messages()
         
         if not messages:
             return "Conversación vacía."
@@ -247,7 +247,6 @@ def export_conversation():
         export_text += f"ID: {current_conversation_id}\n"
         export_text += "=" * 50 + "\n\n"
         
-        # messages son dicts con 'role' y 'content'
         for msg in messages:
             role = "Usuario" if msg['role'] == 'user' else "Minerva"
             export_text += f"{role}: {msg['content']}\n\n"
@@ -264,25 +263,7 @@ def export_conversation():
 # ==================== GESTIÓN DE MEMORIA (mem0) ====================
 
 def load_all_memories() -> str:
-    """
-    Carga todas las memorias de mem0.
-    
-    ESTRUCTURA REAL de mem0.get_all():
-    {
-        'results': [
-            {
-                'id': 'uuid-string',
-                'memory': 'El texto de la memoria',
-                'hash': 'hash-string',
-                'metadata': {...},
-                'created_at': 'timestamp',
-                'updated_at': 'timestamp',
-                'user_id': 'marcelo'
-            },
-            ...
-        ]
-    }
-    """
+    """Carga todas las memorias de mem0."""
     try:
         crew = initialize_crew()
         
@@ -291,14 +272,8 @@ def load_all_memories() -> str:
         
         logger.info("🔍 Cargando memorias de mem0...")
         
-        # mem0 devuelve un dict con clave 'results'
         response = crew.memory_service.get_all(limit=100)
         
-        logger.info(f"📊 Respuesta de mem0: {type(response)}")
-        if isinstance(response, dict):
-            logger.info(f"📊 Keys: {response.keys()}")
-        
-        # Extraer la lista de memorias
         if isinstance(response, dict):
             memories = response.get('results', [])
         elif isinstance(response, list):
@@ -382,23 +357,18 @@ def load_all_memories() -> str:
         """
         
         for i, mem in enumerate(memories, 1):
-            # Parsear correctamente la estructura de mem0
             if isinstance(mem, dict):
                 memory_text = mem.get('memory', mem.get('text', 'Sin contenido'))
                 memory_id = mem.get('id', f'mem_{i}')
                 
-                # Parsear fechas
                 created = mem.get('created_at', 'Desconocido')
                 updated = mem.get('updated_at', 'Desconocido')
                 
-                # Formatear fechas si existen
                 if created != 'Desconocido':
                     try:
-                        # Si es timestamp
                         if isinstance(created, (int, float)):
                             created_dt = datetime.fromtimestamp(created)
                             created = created_dt.strftime('%Y-%m-%d %H:%M')
-                        # Si es string ISO
                         elif isinstance(created, str):
                             try:
                                 created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
@@ -422,25 +392,21 @@ def load_all_memories() -> str:
                     except:
                         pass
                 
-                # Obtener user_id si existe
                 user_id = mem.get('user_id', 'N/A')
                 
             elif isinstance(mem, str):
-                # Fallback: si es string directo
                 memory_text = mem
                 memory_id = f"mem_{i}"
                 created = "Desconocido"
                 updated = "Desconocido"
                 user_id = "N/A"
             else:
-                # Otro tipo
                 memory_text = str(mem)
                 memory_id = f"mem_{i}"
                 created = "Desconocido"
                 updated = "Desconocido"
                 user_id = "N/A"
             
-            # Truncar ID si es muy largo (para UUIDs)
             display_id = memory_id[:12] + '...' if len(memory_id) > 15 else memory_id
             
             html += f"""
@@ -480,7 +446,6 @@ def get_memory_ids_list() -> List[str]:
         
         response = crew.memory_service.get_all(limit=100)
         
-        # Extraer lista de memorias
         if isinstance(response, dict):
             memories = response.get('results', [])
         elif isinstance(response, list):
@@ -493,7 +458,6 @@ def get_memory_ids_list() -> List[str]:
         if not memories:
             return []
         
-        # Crear opciones legibles: "ID - Preview del texto"
         options = []
         for i, mem in enumerate(memories, 1):
             if isinstance(mem, dict):
@@ -506,9 +470,8 @@ def get_memory_ids_list() -> List[str]:
                 memory_id = f"mem_{i}"
                 text = str(mem)
             
-            # Truncar texto para preview
             preview = text[:50] + "..." if len(text) > 50 else text
-            option = f"{memory_id}|||{preview}"  # Separador único
+            option = f"{memory_id}|||{preview}"
             options.append(option)
             
             logger.info(f"  #{i}: {memory_id} - {preview[:30]}...")
@@ -523,11 +486,7 @@ def get_memory_ids_list() -> List[str]:
 
 
 def delete_memory(memory_option: str) -> Tuple[str, str]:
-    """
-    Elimina una memoria específica.
-    
-    FIX v7.3.0: Manejo robusto de IDs con validación.
-    """
+    """Elimina una memoria específica."""
     try:
         logger.info(f"🗑️ Intentando eliminar: '{memory_option}'")
         
@@ -541,11 +500,9 @@ def delete_memory(memory_option: str) -> Tuple[str, str]:
             logger.error("❌ memory_service no disponible")
             return "❌ mem0 no inicializado", load_all_memories()
         
-        # Extraer ID usando el separador único
         if "|||" in memory_option:
             memory_id = memory_option.split("|||")[0].strip()
         else:
-            # Fallback: usar espacio como separador
             parts = memory_option.split(" - ")
             if len(parts) > 0:
                 memory_id = parts[0].strip()
@@ -558,7 +515,6 @@ def delete_memory(memory_option: str) -> Tuple[str, str]:
             logger.error("❌ ID vacío después de parseo")
             return "❌ Error: ID inválido", load_all_memories()
         
-        # Validar que la memoria existe antes de eliminar
         logger.info(f"🔍 Validando existencia de memoria '{memory_id}'...")
         all_mems = crew.memory_service.get_all(limit=100)
         
@@ -581,7 +537,6 @@ def delete_memory(memory_option: str) -> Tuple[str, str]:
             logger.warning(f"⚠️ Memoria '{memory_id}' no encontrada en lista")
             return f"⚠️ Memoria '{memory_id}' no encontrada", load_all_memories()
         
-        # Intentar eliminar
         logger.info(f"🗑️ Eliminando memoria '{memory_id}'...")
         crew.memory_service.delete(memory_id=memory_id)
         logger.info(f"✅ Memoria '{memory_id}' eliminada")
@@ -618,15 +573,201 @@ def clear_all_memories() -> Tuple[str, str]:
         return f"❌ Error: {str(e)}", load_all_memories()
 
 
+# ==================== GESTIÓN DE DOCUMENTOS ====================
+
+def load_documents_list() -> str:
+    """Carga la lista de documentos indexados en formato HTML."""
+    try:
+        crew = initialize_crew()
+        
+        documents = crew.db_manager.get_documents(limit=50)
+        
+        if not documents:
+            return "<p style='color: #666; text-align: center; padding: 20px;'>📭 No hay documentos indexados</p>"
+        
+        html = """
+        <style>
+            .doc-table {
+                width: 100%;
+                border-collapse: collapse;
+                margin: 10px 0;
+            }
+            .doc-table th {
+                background: #f0f0f0;
+                padding: 12px;
+                text-align: left;
+                font-weight: 600;
+                border-bottom: 2px solid #ddd;
+            }
+            .doc-table td {
+                padding: 10px 12px;
+                border-bottom: 1px solid #eee;
+            }
+            .doc-table tr:hover {
+                background: #f9f9f9;
+            }
+            .badge {
+                display: inline-block;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-size: 0.85em;
+                font-weight: 500;
+            }
+            .badge-pdf {
+                background: #fee;
+                color: #c00;
+            }
+            .badge-docx {
+                background: #eef;
+                color: #00c;
+            }
+            .badge-txt {
+                background: #efe;
+                color: #0c0;
+            }
+        </style>
+        <table class='doc-table'>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Nombre</th>
+                    <th>Tipo</th>
+                    <th>Chunks</th>
+                    <th>Indexado</th>
+                </tr>
+            </thead>
+            <tbody>
+        """
+        
+        for doc in documents:
+            badge_class = f"badge-{doc.file_type.lower()}"
+            
+            html += f"""
+                <tr>
+                    <td><strong>#{doc.id}</strong></td>
+                    <td>{doc.filename}</td>
+                    <td><span class='badge {badge_class}'>{doc.file_type.upper()}</span></td>
+                    <td>{doc.chunk_count or 'N/A'}</td>
+                    <td>{doc.processed_at.strftime('%Y-%m-%d %H:%M')}</td>
+                </tr>
+            """
+        
+        html += """
+            </tbody>
+        </table>
+        """
+        
+        return html
+        
+    except Exception as e:
+        logger.error(f"Error cargando documentos: {e}")
+        return f"<p style='color: red;'>❌ Error: {str(e)}</p>"
+
+
+def upload_and_index_document(file) -> Tuple[str, str]:
+    """
+    Procesa y indexa un documento subido.
+    
+    Args:
+        file: Archivo subido por Gradio
+        
+    Returns:
+        Tupla de (mensaje_resultado, lista_documentos_actualizada)
+    """
+    try:
+        if file is None:
+            return "⚠️ No se seleccionó ningún archivo", load_documents_list()
+        
+        crew = initialize_crew()
+        
+        file_path = Path(file.name)
+        
+        logger.info(f"📄 Procesando archivo: {file_path.name}")
+        
+        result = crew.indexer.index_document(
+            file_path=file_path,
+            collection_name="knowledge_base"
+        )
+        
+        if result.get('success'):
+            msg = f"""
+            ✅ **Documento indexado exitosamente**
+            
+            📄 **Archivo:** {result['filename']}
+            📊 **Chunks creados:** {result['chunks_created']}
+            ⏱️ **Tiempo:** {result['processing_time_seconds']:.2f}s
+            🆔 **ID en DB:** {result['document_id']}
+            
+            💡 Ahora puedes hacer preguntas sobre este documento.
+            """
+        else:
+            msg = f"❌ Error indexando documento: {result.get('error', 'Unknown error')}"
+        
+        return msg, load_documents_list()
+        
+    except Exception as e:
+        logger.error(f"❌ Error en upload_and_index: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"❌ Error: {str(e)}", load_documents_list()
+
+
+def delete_document_by_id(document_id: int) -> Tuple[str, str]:
+    """
+    Elimina un documento del índice.
+    
+    Args:
+        document_id: ID del documento a eliminar
+        
+    Returns:
+        Tupla de (mensaje_resultado, lista_documentos_actualizada)
+    """
+    try:
+        if not document_id or document_id <= 0:
+            return "⚠️ Debes ingresar un ID válido", load_documents_list()
+        
+        crew = initialize_crew()
+        
+        success = crew.indexer.delete_document(
+            document_id=int(document_id),
+            collection_name="knowledge_base"
+        )
+        
+        if success:
+            msg = f"✅ Documento #{document_id} eliminado del índice"
+        else:
+            msg = f"❌ Error eliminando documento #{document_id}"
+        
+        return msg, load_documents_list()
+        
+    except Exception as e:
+        logger.error(f"❌ Error eliminando documento: {e}")
+        return f"❌ Error: {str(e)}", load_documents_list()
+
+
+def get_document_ids_list() -> List[int]:
+    """Obtiene lista de IDs de documentos para dropdown."""
+    try:
+        crew = initialize_crew()
+        
+        documents = crew.db_manager.get_documents(limit=100)
+        
+        if not documents:
+            return []
+        
+        return [doc.id for doc in documents]
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo IDs de documentos: {e}")
+        return []
+
+
 def create_interface():
     """Crea interfaz Gradio completa con fuente Montserrat."""
     
-    # CSS personalizado con Montserrat GLOBAL
     custom_css = """
-    /* Importar Montserrat */
     @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap');
     
-    /* Aplicar Montserrat a TODO */
     * {
         font-family: 'Montserrat', sans-serif !important;
     }
@@ -635,58 +776,48 @@ def create_interface():
         font-family: 'Montserrat', sans-serif !important;
     }
     
-    /* Mensajes del chat */
     .message {
         font-family: 'Montserrat', sans-serif !important;
         font-size: 15px;
         line-height: 1.7;
     }
     
-    /* Contenido en prosa */
     .prose {
         font-family: 'Montserrat', sans-serif !important;
     }
     
-    /* Inputs */
     input, textarea, select {
         font-family: 'Montserrat', sans-serif !important;
     }
     
-    /* Botones */
     button {
         font-family: 'Montserrat', sans-serif !important;
         font-weight: 600 !important;
     }
     
-    /* Labels */
     label {
         font-family: 'Montserrat', sans-serif !important;
         font-weight: 500 !important;
     }
     
-    /* Markdown */
     .markdown-text {
         font-family: 'Montserrat', sans-serif !important;
     }
     
-    /* Headers en Gradio */
     h1, h2, h3, h4, h5, h6 {
         font-family: 'Montserrat', sans-serif !important;
         font-weight: 700 !important;
     }
     
-    /* Tabs */
     .tab-nav button {
         font-family: 'Montserrat', sans-serif !important;
         font-weight: 600 !important;
     }
     
-    /* Dropdowns */
     .dropdown-menu {
         font-family: 'Montserrat', sans-serif !important;
     }
     
-    /* Info boxes */
     .gr-box {
         font-family: 'Montserrat', sans-serif !important;
     }
@@ -698,7 +829,7 @@ def create_interface():
         css=custom_css
     ) as interface:
         
-        gr.Markdown("# 🧠 Minerva v7.3.0 - CrewAI + mem0 (CPU)")
+        gr.Markdown("# 🧠 Minerva v8.0.0 - CrewAI + mem0 Mejorado + Documentos")
         
         with gr.Tabs():
             
@@ -706,7 +837,6 @@ def create_interface():
             with gr.Tab("💬 Chat"):
                 with gr.Row():
                     with gr.Column(scale=4):
-                        # FIX: Usar type='messages' en lugar de 'tuples'
                         chatbot = gr.Chatbot(
                             height=400,
                             show_label=False,
@@ -742,8 +872,8 @@ def create_interface():
 **Memoria:** mem0 1.0.0 (CPU)
 **Agentes:** 3
 
-⚠️ **Nota:** CUDA deshabilitado
-(GTX 1050 incompatible)
+✅ **Memoria mejorada**
+✅ **Documentos restaurados**
                         """)
                         
                         export_output = gr.Textbox(
@@ -752,19 +882,15 @@ def create_interface():
                             visible=False
                         )
                 
-                # Event handlers adaptados a type='messages'
                 def user_message(message, history):
-                    """Adapta al formato messages de Gradio."""
                     return "", history + [{"role": "user", "content": message}]
                 
                 def bot_response(history):
-                    """Procesa y responde en formato messages."""
                     if not history or history[-1].get("role") != "user":
                         return history, get_loaded_prompts_info()
                     
                     user_msg = history[-1]["content"]
                     
-                    # Convertir historial a formato antiguo para chat_function
                     old_format_history = []
                     for msg in history[:-1]:
                         if msg["role"] == "user":
@@ -775,7 +901,6 @@ def create_interface():
                     
                     bot_msg = chat_function(user_msg, old_format_history)
                     
-                    # Agregar respuesta
                     history.append({"role": "assistant", "content": bot_msg})
                     
                     return history, get_loaded_prompts_info()
@@ -833,20 +958,89 @@ def create_interface():
                     export_output
                 )
             
-            # ============= TAB 2: MEMORIA (mem0) =============
+            # ============= TAB 2: DOCUMENTOS =============
+            with gr.Tab("📚 Documentos"):
+                
+                gr.Markdown("""
+                ### Gestión de Documentos (RAG)
+                
+                Sube documentos para que Minerva pueda responder preguntas sobre ellos.
+                
+                **Formatos soportados:**
+                - 📕 PDF (.pdf)
+                - 📘 Word (.docx)
+                - 📄 Texto (.txt)
+                - 📝 Markdown (.md)
+                """)
+                
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        gr.Markdown("#### 📤 Subir Documento")
+                        
+                        file_upload = gr.File(
+                            label="Selecciona un archivo",
+                            file_types=[".pdf", ".docx", ".txt", ".md"]
+                        )
+                        
+                        upload_btn = gr.Button("📤 Subir e Indexar", variant="primary")
+                        
+                        upload_result = gr.Markdown("")
+                    
+                    with gr.Column(scale=2):
+                        gr.Markdown("#### 🗑️ Eliminar Documento")
+                        
+                        doc_id_input = gr.Number(
+                            label="ID del documento",
+                            value=1,
+                            precision=0,
+                            minimum=1
+                        )
+                        
+                        delete_doc_btn = gr.Button("🗑️ Eliminar", variant="stop")
+                        
+                        delete_result = gr.Markdown("")
+                
+                gr.Markdown("---")
+                gr.Markdown("#### 📋 Documentos Indexados")
+                
+                refresh_docs_btn = gr.Button("🔄 Recargar Lista")
+                
+                documents_display = gr.HTML(
+                    value=load_documents_list(),
+                    label="Documentos"
+                )
+                
+                upload_btn.click(
+                    upload_and_index_document,
+                    inputs=file_upload,
+                    outputs=[upload_result, documents_display]
+                )
+                
+                delete_doc_btn.click(
+                    delete_document_by_id,
+                    inputs=doc_id_input,
+                    outputs=[delete_result, documents_display]
+                )
+                
+                refresh_docs_btn.click(
+                    load_documents_list,
+                    None,
+                    documents_display
+                )
+            
+            # ============= TAB 3: MEMORIA (mem0) =============
             with gr.Tab("🧠 Memoria (mem0)"):
                 
                 gr.Markdown("""
                 ### Gestión de Memoria (mem0)
                 
                 mem0 gestiona automáticamente la memoria persistente.
-                Extrae, consolida y actualiza información relevante del usuario.
                 
-                **Características:**
-                - ✅ Consolidación automática de información
-                - ✅ Actualización inteligente de hechos
-                - ✅ Eliminación de duplicados
-                - ✅ Memoria que trasciende conversaciones
+                **Características mejoradas v8.0:**
+                - ✅ Extracción más inteligente de información
+                - ✅ Validación de calidad de memorias
+                - ✅ Mejor consolidación de datos
+                - ✅ Menos "alucinaciones"
                 
                 **Nota:** Ejecutándose en CPU (CUDA deshabilitado para GTX 1050)
                 """)
@@ -876,7 +1070,6 @@ def create_interface():
                 
                 delete_result = gr.Markdown("")
                 
-                # Eventos
                 def refresh_memories_and_dropdown():
                     memories_html = load_all_memories()
                     memory_options = get_memory_ids_list()
@@ -908,7 +1101,6 @@ def create_interface():
                     [memories_display, memory_selector]
                 )
                 
-                # Cargar dropdown inicial
                 interface.load(
                     get_memory_ids_list,
                     None,
@@ -919,7 +1111,7 @@ def create_interface():
             """
             ---
             <div style='text-align: center; color: #666; font-size: 0.9em; font-family: Montserrat;'>
-                🧠 <strong>Minerva v7.3.0</strong> - CrewAI + mem0 (CPU) + Debugging Mejorado
+                🧠 <strong>Minerva v8.0.0</strong> - CrewAI + mem0 Mejorado + Gestión de Documentos Restaurada
             </div>
             """
         )

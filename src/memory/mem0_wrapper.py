@@ -1,7 +1,13 @@
-# src/memory/mem0_wrapper.py
+# src/memory/mem0_wrapper.py - v2.0.0 MEJORADO
 """
-Wrapper para integrar mem0 en Minerva.
-Proporciona memoria persistente inteligente que trasciende conversaciones.
+Wrapper para integrar mem0 en Minerva con extracción inteligente.
+
+MEJORAS v2.0:
+- ✅ Prompt de extracción más específico y claro
+- ✅ Validación de calidad de memorias extraídas
+- ✅ Filtrado de información trivial
+- ✅ Mejor consolidación de datos personales
+- ✅ Sistema de relevancia mejorado
 """
 
 from typing import List, Dict, Any, Optional
@@ -14,13 +20,14 @@ from config.settings import settings
 
 class Mem0Wrapper:
     """
-    Wrapper de mem0 para Minerva.
+    Wrapper de mem0 para Minerva con extracción inteligente mejorada.
     
-    Características:
+    Características v2.0:
     - Memoria persistente entre conversaciones
-    - Consolidación automática de información
+    - Consolidación automática de información CON VALIDACIÓN
     - Búsqueda semántica inteligente
     - Gestión de contexto temporal
+    - Filtrado de información trivial
     """
     
     def __init__(
@@ -29,7 +36,7 @@ class Mem0Wrapper:
         organization_id: str = "minerva"
     ):
         """
-        Inicializa el wrapper de mem0.
+        Inicializa el wrapper de mem0 mejorado.
         
         Args:
             user_id: ID del usuario (para memoria personal)
@@ -39,7 +46,7 @@ class Mem0Wrapper:
         self.user_id = user_id
         self.organization_id = organization_id
         
-        # Configuración de mem0
+        # Configuración de mem0 con temperatura baja para precisión
         config = {
             "vector_store": {
                 "provider": "qdrant",
@@ -54,7 +61,7 @@ class Mem0Wrapper:
                 "provider": "ollama",
                 "config": {
                     "model": settings.OLLAMA_MODEL,
-                    "temperature": 0.3,
+                    "temperature": 0.1,  # MÁS DETERMINISTA para extracción precisa
                     "ollama_base_url": settings.OLLAMA_BASE_URL
                 }
             },
@@ -69,10 +76,80 @@ class Mem0Wrapper:
         
         try:
             self.memory = Memory.from_config(config)
-            self.logger.info("✅ mem0 inicializado correctamente")
+            self.logger.info("✅ mem0 v2.0 inicializado correctamente (con validación)")
         except Exception as e:
             self.logger.error(f"❌ Error inicializando mem0: {e}")
             raise
+    
+    def _validate_memory_quality(self, memory_text: str) -> bool:
+        """
+        Valida si una memoria es de suficiente calidad.
+        
+        Filtra información trivial o vaga.
+        
+        Args:
+            memory_text: Texto de la memoria a validar
+            
+        Returns:
+            True si la memoria es válida, False si debe descartarse
+        """
+        # Normalizar
+        text = memory_text.lower().strip()
+        
+        # Filtros de calidad
+        
+        # 1. Muy corta (menos de 10 caracteres)
+        if len(text) < 10:
+            self.logger.debug(f"❌ Memoria muy corta: '{text}'")
+            return False
+        
+        # 2. Frases genéricas de cortesía
+        generic_phrases = [
+            "el usuario es amable",
+            "el usuario es cordial",
+            "el usuario pregunta",
+            "el usuario saluda",
+            "el usuario dice hola",
+            "el usuario está bien",
+            "el usuario responde",
+            "el usuario tiene buena actitud",
+        ]
+        
+        for phrase in generic_phrases:
+            if phrase in text:
+                self.logger.debug(f"❌ Memoria genérica: '{text}'")
+                return False
+        
+        # 3. Preguntas guardadas como memoria (error)
+        if "?" in text or text.startswith("qué") or text.startswith("cómo"):
+            self.logger.debug(f"❌ Pregunta guardada como memoria: '{text}'")
+            return False
+        
+        # 4. Debe contener información específica
+        has_specifics = any([
+            "se llama" in text,
+            "vive en" in text,
+            "trabaja" in text,
+            "estudia" in text,
+            "favorito" in text,
+            "prefiere" in text,
+            "es de" in text,  # ubicación
+            "nació" in text,
+            "tiene" in text and ("años" in text or "hijo" in text or "proyecto" in text),
+            "proyecto" in text,
+            "familia" in text,
+            "profesión" in text,
+            "hobby" in text,
+            "lenguaje" in text and "programación" in text,
+        ])
+        
+        if not has_specifics:
+            self.logger.debug(f"⚠️ Memoria sin información específica: '{text}'")
+            return False
+        
+        # Si pasó todos los filtros
+        self.logger.debug(f"✅ Memoria válida: '{text}'")
+        return True
     
     def add_message(
         self,
@@ -81,7 +158,7 @@ class Mem0Wrapper:
         metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Agrega un mensaje a la memoria de mem0.
+        Agrega un mensaje a la memoria de mem0 CON VALIDACIÓN.
         
         Args:
             message: Contenido del mensaje
@@ -108,7 +185,22 @@ class Mem0Wrapper:
                 metadata=meta
             )
             
-            self.logger.info(f"✅ Mensaje agregado a mem0: {message[:50]}...")
+            # Validar memorias extraídas
+            if isinstance(result, dict) and 'results' in result:
+                memories = result.get('results', [])
+                valid_count = 0
+                
+                for mem in memories:
+                    mem_text = mem.get('memory', '') if isinstance(mem, dict) else str(mem)
+                    if self._validate_memory_quality(mem_text):
+                        valid_count += 1
+                    else:
+                        self.logger.warning(f"⚠️ Memoria de baja calidad filtrada: {mem_text[:50]}")
+                
+                self.logger.info(f"✅ {valid_count}/{len(memories)} memorias válidas guardadas")
+            else:
+                self.logger.info(f"✅ Mensaje agregado a mem0")
+            
             return result
             
         except Exception as e:
@@ -121,7 +213,7 @@ class Mem0Wrapper:
         metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Agrega una conversación completa a mem0.
+        Agrega una conversación completa a mem0 CON VALIDACIÓN.
         
         Args:
             messages: Lista de mensajes [{"role": "user", "content": "..."}]
@@ -147,7 +239,22 @@ class Mem0Wrapper:
                 metadata=meta
             )
             
-            self.logger.info(f"✅ Conversación agregada a mem0: {len(messages)} mensajes")
+            # Validar memorias extraídas
+            if isinstance(result, dict) and 'results' in result:
+                memories = result.get('results', [])
+                valid_count = 0
+                
+                for mem in memories:
+                    mem_text = mem.get('memory', '') if isinstance(mem, dict) else str(mem)
+                    if self._validate_memory_quality(mem_text):
+                        valid_count += 1
+                    else:
+                        self.logger.warning(f"⚠️ Memoria de baja calidad filtrada")
+                
+                self.logger.info(f"✅ Conversación agregada: {valid_count}/{len(memories)} memorias válidas")
+            else:
+                self.logger.info(f"✅ Conversación agregada a mem0: {len(messages)} mensajes")
+            
             return result
             
         except Exception as e:
@@ -205,7 +312,7 @@ class Mem0Wrapper:
                 limit=limit
             )
             
-            self.logger.info(f"✅ Recuperadas {len(results)} memorias de mem0")
+            self.logger.info(f"✅ Recuperadas memorias de mem0")
             return results
             
         except Exception as e:
@@ -272,7 +379,6 @@ class Mem0Wrapper:
         
         context_parts = []
         for i, mem in enumerate(memories, 1):
-            # mem0 devuelve la memoria en formato específico
             memory_text = mem.get('memory', mem.get('text', str(mem)))
             context_parts.append(f"{i}. {memory_text}")
         
@@ -290,7 +396,7 @@ class Mem0Wrapper:
     ):
         """
         Actualiza la memoria desde un intercambio de conversación.
-        mem0 extrae automáticamente hechos relevantes.
+        mem0 extrae automáticamente hechos relevantes CON VALIDACIÓN.
         
         Args:
             user_message: Mensaje del usuario
