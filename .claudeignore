@@ -1,94 +1,121 @@
-# ============================================
-# MINERVA - .claudeignore
-# ============================================
-# Archivos/directorios que NO se subirán a Claude
-# Esto reduce el tamaño del contexto y evita límites
-# ============================================
+# ================================================================================
+# .claudeignore - AGRESIVO para reducir contexto de Claude al máximo
+# ================================================================================
+# Objetivo: Reducir de 67% a ~20-30% excluyendo código no crítico
+# ================================================================================
 
-# ====== CRÍTICO: DATOS PESADOS ======
-# Directorio data/ completo (477 MB)
-data/qdrant_storage/
-data/sqlite/*.db
-data/sqlite/*.db-journal
-data/uploads/
-data/backups/
-data/temp/
-
-# Mantener solo READMEs informativos
-!data/*/README.md
-
-# ====== ENTORNOS VIRTUALES ======
-venv/
+# ============================================================================
+# INFRAESTRUCTURA (No necesita leer esto para entender el proyecto)
+# ============================================================================
 minerva_env/
-ENV/
+venv/
 env/
-.venv/
-
-# ====== PYTHON CACHE ======
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-.Python
-*.so
-
-# ====== IDEs ======
+.git/
 .vscode/
 .idea/
-*.sublime-workspace
 
-# ====== GIT ======
-.git/
+# ============================================================================
+# DATOS Y BASES DE DATOS (No son código)
+# ============================================================================
+data/
+*.db
+*.sqlite
+*.sqlite3
+qdrant_storage/
 
-# ====== LOGS ======
-logs/
+# ============================================================================
+# TESTS (Útiles, pero no críticos para entender el proyecto)
+# ============================================================================
+tests/
+test_*.py
+*_test.py
+
+# ============================================================================
+# UI (Gradio es verbose, Claude puede entender el proyecto sin leer la UI completa)
+# ============================================================================
+src/ui/
+# Si quieres que lea ALGO de UI, comenta la línea de arriba y descomenta estas:
+# src/ui/prompt_admin.py
+# src/ui/stats_dashboard.py
+
+# ============================================================================
+# ARCHIVOS DE DOCUMENTACIÓN GRANDES (Ya tienes MINERVA_PROJECT.md)
+# ============================================================================
+ADMIN_GUIDE.md
+QUICKSTART.md
+CHANGELOG.md
+docs/
+
+# ============================================================================
+# SCRIPTS DE UTILIDAD (No críticos para entender arquitectura)
+# ============================================================================
+scripts/
+notebooks/
+
+# ============================================================================
+# ARCHIVOS TEMPORALES Y LOGS
+# ============================================================================
 *.log
+logs/
+exports/
+=*
 
-# ====== JUPYTER ======
-.ipynb_checkpoints/
-notebooks/*.png
-notebooks/*.jpg
+# ============================================================================
+# ARCHIVOS DE CONFIGURACIÓN SENSIBLES
+# ============================================================================
+.env
+.env.local
+*.key
+*.pem
 
-# ====== SYSTEM ======
-.DS_Store
-Thumbs.db
-*.swp
-*.swo
-
-# ====== TESTING ======
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-
-# ====== BUILDS ======
+# ============================================================================
+# BUILD Y COMPILADOS
+# ============================================================================
 build/
 dist/
 *.egg-info/
 
-# ====== MODELOS Y CACHE ======
-.cache/
-models/
-*.gguf
+# ============================================================================
+# ARCHIVOS DE VERSIONES PROBLEMÁTICOS
+# ============================================================================
+=0.5.23
+=1.23.0
+=1.76.0
 
-# ====== EXPORTS (mantener vacío para estructura) ======
-data/exports/*.txt
-data/exports/*.json
-!data/exports/.gitkeep
+# ============================================================================
+# DOCUMENTOS Y MULTIMEDIA
+# ============================================================================
+*.pdf
+*.docx
+*.xlsx
+*.mp4
+*.png
+*.jpg
+*.jpeg
 
-# ====== ARCHIVOS GRANDES ======
-*.zip
-*.tar.gz
-*.rar
-*.7z
-*.bin
+# ============================================================================
+# ARCHIVOS ESPECÍFICOS GRANDES QUE NO SON CRÍTICOS
+# ============================================================================
+# Descomenta si algún archivo específico es muy grande:
+# src/processing/indexer.py
+# src/database/manager.py
 
-# ============================================
-# RESULTADO ESPERADO AL SUBIR A CLAUDE:
+# ============================================================================
+# NOTA: Lo que SÍ se leerá (lo mínimo para entender Minerva):
+# ============================================================================
+# ✅ README.md
+# ✅ MINERVA_PROJECT.md (archivo principal de documentación)
+# ✅ requirements.txt
+# ✅ main.py
+# ✅ src/agents/*.py (los agentes principales)
+# ✅ src/crew/*.py (arquitectura CrewAI)
+# ✅ src/router/*.py (lógica de routing)
+# ✅ src/memory/*.py (sistema de memoria)
+# ✅ src/database/schema.py (estructura de datos)
+# ✅ config/settings.py
 #
-# SIN .claudeignore:  ~478 MB (límite rápido)
-# CON .claudeignore:  ~1-2 MB (óptimo)
-#
-# Incluye: código fuente, configs, tests
-# Excluye: datos, caches, binarios
-# ============================================
+# Total estimado: ~15-20 archivos clave = ~20-30% de contexto
+# ================================================================================
