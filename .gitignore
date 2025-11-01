@@ -162,6 +162,13 @@ tika-server*.jar.md5
 *.swo
 *~
 
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
 # Archivos de caché
 .cache/
 *.cache
